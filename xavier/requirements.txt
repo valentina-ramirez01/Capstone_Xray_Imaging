@@ -1,0 +1,7 @@
+#Files Required for the project
+
+fastapi
+uvicorn[standard]
+opencv-python
+numpy
+pandas
