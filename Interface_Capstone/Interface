@@ -1,2 +1,10 @@
-import tkinter
-import PyQt6
+
+from PyQt6 import QtWidgets
+import sys
+
+app = QtWidgets.QApplication(sys.argv)         # 1) creates the event loop
+win = QtWidgets.QMainWindow()                  # 2) top-level window
+win.setWindowTitle("X-Imaging UI — step 1")
+win.resize(900, 600)
+win.show()                                     # 3) window is registered with the loop
+sys.exit(app.exec())                           # 4) enter the loop (non-blocking dispatch)
