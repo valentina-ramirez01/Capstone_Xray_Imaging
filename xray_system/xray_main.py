@@ -12,7 +12,11 @@ import numpy as np
 from mipi_camera import CameraController
 
 DEFAULT_PHOTO_SHUTTER_US = 200_000  # 200 ms
+<<<<<<< HEAD
 DEFAULT_PHOTO_GAIN       = 16
+=======
+DEFAULT_PHOTO_GAIN       = 4.0
+>>>>>>> c81ab49 (funciones de camera)
 
 WIN = "Mono Live — p/s:photo  m:meter  g:gallery  b:boost  f:fullscreen  q:quit"
 
