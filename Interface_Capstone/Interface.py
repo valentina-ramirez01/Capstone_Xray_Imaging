@@ -1,31 +1,44 @@
+# Interface.py
+# PyQt6 GUI for IMX415 (Picamera2) ONLY — no OpenCV webcam fallback.
+
 import sys
-import math                              # for a moving sine-wave stripe in dummy preview
-import numpy as np                       # for image generation
-import cv2                               # OpenCV for image conversion (gray->RGB)
+from pathlib import Path
+import numpy as np
+import cv2
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QGroupBox, QToolButton, QStatusBar, QMenuBar, QFileDialog, QMessageBox
+    QLabel, QPushButton, QGroupBox, QToolButton, QStatusBar, QMenuBar,
+    QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap, QAction, QKeySequence
+
+# --- your project helpers ---
+from io_utils import capture_and_save_frame
+from gallery import Gallery
 
 
 # ─────────────────────────────────────────────────────────────
-# Optional: try real camera backend; fall back to dummy if not available
+# Abort early if Picamera2 is missing (no fallback)
 # ─────────────────────────────────────────────────────────────
 try:
-    from mipi_camera import CameraController
-    HAS_CAMERA = True
+    from picamera2 import Picamera2
 except Exception as e:
-    print("Camera backend not available", e)
-    HAS_CAMERA = False
+    print("ERROR: picamera2 is required for this interface (no fallback).")
+    print("Install on Raspberry Pi OS Bookworm: sudo apt install -y python3-picamera2")
+    print("Details:", e)
+    sys.exit(1)
 
 
 # ─────────────────────────────────────────────────────────────
-# Helper: grayscale numpy array -> QPixmap to paint in QLabel
+# Utilities
 # ─────────────────────────────────────────────────────────────
 def gray_to_qpix(gray: np.ndarray) -> QPixmap:
+    """Convert a 2D uint8 array to QPixmap for QLabel."""
+    if gray is None:
+        raise RuntimeError("Empty frame")
     if gray.dtype != np.uint8:
         gray = np.clip(gray, 0, 255).astype(np.uint8)
     h, w = gray.shape[:2]
@@ -35,76 +48,105 @@ def gray_to_qpix(gray: np.ndarray) -> QPixmap:
 
 
 # ─────────────────────────────────────────────────────────────
-# Dummy camera (runs on any PC). Generates a moving gradient.
+# Picamera2 backend (IMX415) — mirrors your test script
 # ─────────────────────────────────────────────────────────────
-class DummyCam:
-    def __init__(self, preview_size=(1280, 720), still_size=(3840, 2160)):
-        self.preview_size = preview_size
-        self.still_size = still_size
-        self._t = 0
+class PiCamBackend:
+    """
+    Picamera2 backend that follows your minimal test:
+      - cam = Picamera2()
+      - cam.configure(cam.create_preview_configuration(main={"size": (1280, 720)}))
+      - cam.start()
+      - frame = cam.capture_array("main")
+      - convert to gray if needed
 
-    def start(self):  # mirror real backend API
-        pass
+    Exposes:
+      start(), stop(), grab_gray(), grab_bgr()
+    """
+    def __init__(self, preview_size=(1280, 720)):
+        self.preview_size = preview_size
+        self.cam: Picamera2 | None = None
+
+    def start(self):
+        self.cam = Picamera2()
+        self.cam.configure(self.cam.create_preview_configuration(main={"size": self.preview_size}))
+        self.cam.start()
 
     def stop(self):
-        pass
+        try:
+            if self.cam:
+                self.cam.stop()
+        finally:
+            self.cam = None
 
-    def set_ae_limits(self, **kwargs):
-        pass
+    def _capture_main(self) -> np.ndarray:
+        if not self.cam:
+            raise RuntimeError("Picamera2 not started")
+        return self.cam.capture_array("main")
 
-    def auto_meter(self, settle_s=1.0, samples=3):
-        # plausible constants for demo
-        return (25000, 2.0, 33333, 127.0)
+    def grab_gray(self) -> np.ndarray:
+        """
+        Return a grayscale view of the current frame.
+        Picamera2 arrays are typically RGB; convert robustly.
+        """
+        frame = self._capture_main()
+        if frame.ndim == 2:
+            return frame
+        # If 3-ch, assume RGB (Picamera2 default) and convert to gray
+        try:
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        except Exception:
+            # Fallback to BGR2GRAY if driver delivered BGR
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    def set_photo_shutter_us(self, us):  # for completeness
-        pass
-
-    def set_photo_gain(self, g):
-        pass
-
-    def grab_gray(self):
-        w, h = self.preview_size
-        x = np.tile(np.linspace(0, 255, w, dtype=np.uint8), (h, 1))
-        y = np.tile(np.linspace(0, 255, h, dtype=np.uint8), (w, 1)).T
-        img = ((0.6 * x + 0.4 * y) % 256).astype(np.uint8)
-        col = int((math.sin(self._t / 10) * 0.5 + 0.5) * (w - 1))
-        img[:, col:col + 2] = 255  # moving bright stripe so you see motion
-        self._t += 1
-        return img
-
-    def capture_photo(self, path="mono_dummy.png"):
-        cv2.imwrite(path, self.grab_gray())
-        return path
+    def grab_bgr(self) -> np.ndarray:
+        """
+        Return a BGR frame suitable for cv2.imwrite.
+        """
+        frame = self._capture_main()
+        if frame.ndim == 2:
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        # Picamera2 usually returns RGB
+        try:
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        except Exception:
+            return frame  # if it's already BGR
 
 
+# ─────────────────────────────────────────────────────────────
+# Main GUI
+# ─────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # ---- Window basics ----
-        self.setWindowTitle("IC X-ray Viewer v0.3")
+        # Window
+        self.setWindowTitle("IC X-ray Viewer — IMX415 (Picamera2)")
         self.resize(1280, 720)
 
-        # ---- TOP: alarm/status banner ----
+        # Capture/session state
+        self.session_paths: list[str] = []
+        self.last_path: Path | None = None
+        self.save_dir = "captures"
+
+        # Top alarm bar
         self.alarm = QLabel("OK")
         self.alarm.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.alarm.setObjectName("alarmBar")  # for QSS targeting
+        self.alarm.setObjectName("alarmBar")
 
-        # ---- CENTER: camera view ----
+        # Camera view
         self.view = QLabel("Camera View")
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.view.setMinimumSize(960, 540)
-        self.view.setObjectName("cameraView")  # for QSS targeting
+        self.view.setObjectName("cameraView")
 
-        # ---- LEFT: main action buttons ----
+        # Left column
         self.btn_preview = QPushButton("Preview")
-        self.btn_stop    = QPushButton("STOP")
+        self.btn_stop    = QPushButton("STOP"); self.btn_stop.setObjectName("btnStop")
         self.btn_gallery = QPushButton("Gallery")
         self.btn_export  = QPushButton("Export Last")
         self.btn_editor  = QPushButton("Open Editor")
-        self.btn_stop.setObjectName("btnStop")  # for QSS targeting
 
-        # ---- RIGHT: tools box ----
+        # Right tools (placeholders)
         tools_box = QGroupBox("Image Processing Tools")
         tools_col = QVBoxLayout(tools_box)
         self.tb_zoom     = QToolButton(); self.tb_zoom.setText("Zoom")
@@ -116,18 +158,23 @@ class MainWindow(QMainWindow):
         for tb in (self.tb_zoom, self.tb_contrast, self.tb_sharp, self.tb_expo, self.tb_flip, self.tb_focus):
             tools_col.addWidget(tb)
 
-        # ---- STATUS BAR ----
-        self.status = QStatusBar()
-        self.setStatusBar(self.status)
-        self.status.showMessage("Ready.")
-
-        # ---- MENU BAR ----
+        # Status + menu
+        self.status = QStatusBar(); self.setStatusBar(self.status); self.status.showMessage("Ready.")
         menu = self.menuBar() if self.menuBar() else QMenuBar(self)
-        menu.addMenu("&File")
-        menu.addMenu("&View")
-        menu.addMenu("&Help")
+        menu.addMenu("&File"); menu.addMenu("&View"); menu.addMenu("&Help")
 
-        # ---- LAYOUT: left | center | right ----
+        # Hotkeys
+        act_prev   = QAction("Toggle Preview", self); act_prev.setShortcut(QKeySequence("P"))
+        act_stop   = QAction("STOP", self);           act_stop.setShortcut(QKeySequence("S"))
+        act_export = QAction("Export Last", self);    act_export.setShortcut(QKeySequence("Ctrl+S"))
+        act_gal    = QAction("Open Gallery", self);   act_gal.setShortcut(QKeySequence("G"))
+        self.addAction(act_prev); self.addAction(act_stop); self.addAction(act_export); self.addAction(act_gal)
+        act_prev.triggered.connect(self.on_toggle_preview)
+        act_stop.triggered.connect(self.on_stop)
+        act_export.triggered.connect(self.on_export_last)
+        act_gal.triggered.connect(self.on_gallery)
+
+        # Layout: left | center | right
         central = QWidget(self)
         root    = QHBoxLayout(central)
 
@@ -145,11 +192,11 @@ class MainWindow(QMainWindow):
         right.addStretch(1)
 
         root.addLayout(left)
-        root.addLayout(center, 1)  # center gets extra width
+        root.addLayout(center, 1)
         root.addLayout(right)
         self.setCentralWidget(central)
 
-        # ── Cute stylesheet (QSS) applied once
+        # Cute QSS
         self.setStyleSheet("""
         QMainWindow { background: #f7f9fc; }
         QLabel#cameraView {
@@ -195,37 +242,35 @@ class MainWindow(QMainWindow):
         }
         """)
 
-        # ── Backend selection (real on Pi, dummy on PC)
-        self.cam = CameraController(preview_size=(1280, 720), still_size=(3840, 2160)) if HAS_CAMERA else DummyCam()
-        self.cam.start()
-        if HAS_CAMERA:
-            try:
-                self.cam.set_ae_limits(exposure_max_us=33333, gain_min=1.0, gain_max=16.0)  # smoother preview
-            except Exception as e:
-                print("AE limit warn:", e)
+        # Backend: Picamera2 only
+        self.backend = PiCamBackend(preview_size=(1280, 720))
+        try:
+            self.backend.start()
+            self.status.showMessage("Backend: Picamera2 (IMX415)")
+        except Exception as e:
+            QMessageBox.critical(self, "Picamera2 Error",
+                                 f"Failed to start Picamera2:\n{e}\n\n"
+                                 "Ensure the camera is connected and enabled.")
+            sys.exit(1)
 
-        # ── Preview state + timer
+        # Preview state + timer
         self.preview_on = False
-        self.preview_boost = False
-        self.timer = QTimer(self)
-        self.timer.setInterval(33)  # ~30 FPS
-        self.timer.timeout.connect(self.update_frame)
+        self.preview_boost = False  # reserved if you want CLAHE toggle later
+        self.timer = QTimer(self); self.timer.setInterval(33); self.timer.timeout.connect(self.update_frame)
 
-        # ── Wire buttons
+        # Wire buttons
         self.btn_preview.clicked.connect(self.on_toggle_preview)
         self.btn_stop.clicked.connect(self.on_stop)
-        self.btn_gallery.clicked.connect(self.on_gallery)     # placeholder (wired later)
-        self.btn_export.clicked.connect(self.on_export_last)  # placeholder (wired later)
-        self.btn_editor.clicked.connect(self.on_open_editor)  # placeholder (wired later)
+        self.btn_gallery.clicked.connect(self.on_gallery)
+        self.btn_export.clicked.connect(self.on_export_last)
+        self.btn_editor.clicked.connect(self.on_open_editor)
 
-    # ─────────────────────────────────────────────────────────
-    # Slots (button actions)
-    # ─────────────────────────────────────────────────────────
+    # Actions
     def on_toggle_preview(self):
         if not self.preview_on:
             self.preview_on = True
             self.timer.start()
-            self.status.showMessage("Preview ON (AE)")
+            self.status.showMessage("Preview ON")
             self.alarm.setText("Preview: ON")
         else:
             self.preview_on = False
@@ -239,38 +284,76 @@ class MainWindow(QMainWindow):
         self.status.showMessage("Stopped")
         self.alarm.setText("STOP PRESSED!")
         try:
-            self.cam.stop()
+            self.backend.stop()
         except Exception:
             pass
 
-    def on_gallery(self):
-        QMessageBox.information(self, "Gallery", "Ya mismo se pone")
-
     def on_export_last(self):
-        QMessageBox.information(self, "Export", "Ya mismo se pone")
+        """
+        Save the CURRENT live frame to disk (captures/capture_XXXX.png).
+        Uses your io_utils.capture_and_save_frame().
+        """
+        if not self.preview_on:
+            QMessageBox.information(self, "Export", "Start preview first to export the current frame.")
+            return
+        try:
+            bgr = self.backend.grab_bgr()
+            path, _ = capture_and_save_frame(bgr, save_dir=self.save_dir)
+            self.session_paths.append(path)
+            self.last_path = Path(path)
+            self.status.showMessage(f"Saved: {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export", f"Failed to save frame:\n{e}")
+
+    def on_gallery(self):
+        was_on = self.preview_on
+        if was_on:
+            self.on_toggle_preview()
+
+        try:
+            if self.session_paths:
+                gal = Gallery(self.session_paths, window_name="Gallery (session)")
+                gal.run(start_at=str(self.last_path) if self.last_path else None)
+            else:
+                import glob, os
+                all_paths = sorted(glob.glob(os.path.join(self.save_dir, "capture_*.png")))
+                if not all_paths:
+                    QMessageBox.information(self, "Gallery", "No images in captures/.")
+                else:
+                    gal = Gallery(all_paths, window_name="Gallery (all)")
+                    gal.run(start_at=str(self.last_path) if self.last_path else None)
+        except Exception as e:
+            QMessageBox.critical(self, "Gallery", f"Failed to open gallery:\n{e}")
+        finally:
+            if was_on:
+                self.on_toggle_preview()
+            self.status.showMessage("Returned from Gallery.")
 
     def on_open_editor(self):
-        QMessageBox.information(self, "Editor", "Ya mismo se pone")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+        )
+        if not path:
+            return
+        QMessageBox.information(self, "Editor", f"Selected: {path}\n(You can wire image_tools.py here later.)")
 
-    # ─────────────────────────────────────────────────────────
-    # Timer tick: pull a frame and paint it into the QLabel
-    # ─────────────────────────────────────────────────────────
+    # Timer tick — grab, convert, paint
     def update_frame(self):
         try:
-            frame = self.cam.grab_gray()
+            frame = self.backend.grab_gray()
         except Exception as e:
             self.timer.stop()
             self.preview_on = False
             self.alarm.setText(f"Preview error: {e}")
             return
 
-        # Optional: display-only boost (CLAHE)
-        # (We’ll add a toggle/hotkey later)
-        # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        # frame = clahe.apply(frame)
-
+        # Optional: if self.preview_boost: apply CLAHE here
         px = gray_to_qpix(frame)
-        px = px.scaled(self.view.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        px = px.scaled(
+            self.view.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
         self.view.setPixmap(px)
 
 
