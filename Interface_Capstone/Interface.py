@@ -1,88 +1,50 @@
-# Interface.py
-# PyQt6 GUI for IMX415 (Picamera2) ONLY — no OpenCV webcam fallback.
+# Interface.py — PyQt6 GUI for IMX415 (Picamera2) ONLY, with live display controls + export mode toggle.
 
+# --- locate 'xavier' package even if this file is in a different folder ---
 import sys
 from pathlib import Path
-import numpy as np
-import cv2
 
-# --- make 'xavier' importable even when Interface.py is in a separate folder ---
-import sys, os
-from pathlib import Path
-
-# 1) Try to locate the 'xavier' folder by walking up from this file
 _here = Path(__file__).resolve()
 _root = None
 for parent in [_here.parent, *_here.parents]:
     if (parent / "xavier").is_dir():
         _root = parent
         break
-
 if _root is None:
-    raise RuntimeError("Could not find the 'xavier' folder. Make sure your project has a folder named 'xavier'.")
-
-# 2) Add the project root to sys.path so 'from xavier. ...' works
+    raise RuntimeError("Could not find the 'xavier' folder. Place this file within the project tree.")
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
-# -------------------------------------------------------------------------------
 
+# --- require Picamera2 (no fallback) ---
+try:
+    from picamera2 import Picamera2
+except Exception as e:
+    print("ERROR: picamera2 is required (no fallback). Install: sudo apt install -y python3-picamera2")
+    print("Details:", e)
+    sys.exit(1)
+
+# --- std imports ---
+import numpy as np
+import cv2
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QGroupBox, QToolButton, QStatusBar, QMenuBar,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QAction, QKeySequence
+from PyQt6.QtGui import QImage, QPixmap, QAction
 
-# --- your project helpers ---
+# --- your helpers from xavier/ ---
 from xavier.io_utils import capture_and_save_frame
 from xavier.gallery import Gallery
-
-
-# ─────────────────────────────────────────────────────────────
-# Abort early if Picamera2 is missing (no fallback)
-# ─────────────────────────────────────────────────────────────
-try:
-    from picamera2 import Picamera2
-except Exception as e:
-    print("ERROR: picamera2 is required for this interface (no fallback).")
-    print("Install on Raspberry Pi OS Bookworm: sudo apt install -y python3-picamera2")
-    print("Details:", e)
-    sys.exit(1)
-
-
-# ─────────────────────────────────────────────────────────────
-# Utilities
-# ─────────────────────────────────────────────────────────────
-def gray_to_qpix(gray: np.ndarray) -> QPixmap:
-    """Convert a 2D uint8 array to QPixmap for QLabel."""
-    if gray is None:
-        raise RuntimeError("Empty frame")
-    if gray.dtype != np.uint8:
-        gray = np.clip(gray, 0, 255).astype(np.uint8)
-    h, w = gray.shape[:2]
-    rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-    qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-    return QPixmap.fromImage(qimg)
 
 
 # ─────────────────────────────────────────────────────────────
 # Picamera2 backend (IMX415) — mirrors your test script
 # ─────────────────────────────────────────────────────────────
 class PiCamBackend:
-    """
-    Picamera2 backend that follows your minimal test:
-      - cam = Picamera2()
-      - cam.configure(cam.create_preview_configuration(main={"size": (1280, 720)}))
-      - cam.start()
-      - frame = cam.capture_array("main")
-      - convert to gray if needed
-
-    Exposes:
-      start(), stop(), grab_gray(), grab_bgr()
-    """
     def __init__(self, preview_size=(1280, 720)):
         self.preview_size = preview_size
         self.cam: Picamera2 | None = None
@@ -93,44 +55,36 @@ class PiCamBackend:
         self.cam.start()
 
     def stop(self):
-        try:
-            if self.cam:
+        if self.cam:
+            try:
                 self.cam.stop()
-        finally:
-            self.cam = None
+            except Exception:
+                pass
+        self.cam = None
 
-    def _capture_main(self) -> np.ndarray:
+    def _capture(self):
         if not self.cam:
             raise RuntimeError("Picamera2 not started")
         return self.cam.capture_array("main")
 
     def grab_gray(self) -> np.ndarray:
-        """
-        Return a grayscale view of the current frame.
-        Picamera2 arrays are typically RGB; convert robustly.
-        """
-        frame = self._capture_main()
+        frame = self._capture()
         if frame.ndim == 2:
             return frame
-        # If 3-ch, assume RGB (Picamera2 default) and convert to gray
+        # Picamera2 typically returns RGB
         try:
             return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         except Exception:
-            # Fallback to BGR2GRAY if driver delivered BGR
             return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     def grab_bgr(self) -> np.ndarray:
-        """
-        Return a BGR frame suitable for cv2.imwrite.
-        """
-        frame = self._capture_main()
+        frame = self._capture()
         if frame.ndim == 2:
             return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        # Picamera2 usually returns RGB
         try:
             return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         except Exception:
-            return frame  # if it's already BGR
+            return frame  # assume already BGR
 
 
 # ─────────────────────────────────────────────────────────────
@@ -144,60 +98,62 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IC X-ray Viewer — IMX415 (Picamera2)")
         self.resize(1280, 720)
 
-        # Capture/session state
+        # Session / export state
         self.session_paths: list[str] = []
         self.last_path: Path | None = None
         self.save_dir = "captures"
+        self.export_processed = False  # False=save RAW camera frame, True=save processed display
 
-        # Top alarm bar
-        self.alarm = QLabel("OK")
-        self.alarm.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.alarm.setObjectName("alarmBar")
+        # Top banner
+        self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter, objectName="alarmBar")
 
         # Camera view
-        self.view = QLabel("Camera View")
-        self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.view = QLabel("Camera View", alignment=Qt.AlignmentFlag.AlignCenter, objectName="cameraView")
         self.view.setMinimumSize(960, 540)
-        self.view.setObjectName("cameraView")
 
-        # Left column
+        # Left column buttons
         self.btn_preview = QPushButton("Preview")
-        self.btn_stop    = QPushButton("STOP"); self.btn_stop.setObjectName("btnStop")
+        self.btn_stop    = QPushButton("STOP", objectName="btnStop")
         self.btn_gallery = QPushButton("Gallery")
         self.btn_export  = QPushButton("Export Last")
         self.btn_editor  = QPushButton("Open Editor")
 
-        # Right tools (placeholders)
-        tools_box = QGroupBox("Image Processing Tools")
-        tools_col = QVBoxLayout(tools_box)
-        self.tb_zoom     = QToolButton(); self.tb_zoom.setText("Zoom")
-        self.tb_contrast = QToolButton(); self.tb_contrast.setText("Contrast")
-        self.tb_sharp    = QToolButton(); self.tb_sharp.setText("Sharpness")
-        self.tb_expo     = QToolButton(); self.tb_expo.setText("Exposure")
-        self.tb_flip     = QToolButton(); self.tb_flip.setText("Flip")
-        self.tb_focus    = QToolButton(); self.tb_focus.setText("Focus")
-        for tb in (self.tb_zoom, self.tb_contrast, self.tb_sharp, self.tb_expo, self.tb_flip, self.tb_focus):
-            tools_col.addWidget(tb)
+        # Right column tools
+        tools_box = QGroupBox("Display Controls")
+        tlay = QVBoxLayout(tools_box)
+        self.tb_zoom     = QToolButton(text="Zoom")
+        self.tb_contrast = QToolButton(text="Contrast")
+        self.tb_sharp    = QToolButton(text="Sharpness")
+        self.tb_gamma    = QToolButton(text="Exposure (Gamma)")
+        self.tb_filter   = QToolButton(text="Filter")
+        self.tb_reset    = QToolButton(text="Reset View")
+        for b in (self.tb_zoom, self.tb_contrast, self.tb_sharp, self.tb_gamma, self.tb_filter, self.tb_reset):
+            tlay.addWidget(b)
 
-        # Status + menu
-        self.status = QStatusBar(); self.setStatusBar(self.status); self.status.showMessage("Ready.")
-        menu = self.menuBar() if self.menuBar() else QMenuBar(self)
+        # Status bar
+        self.status = QStatusBar()
+        self.setStatusBar(self.status)
+        self.status.showMessage("Ready. (Export mode: RAW)")
+
+        # Menu / hotkeys
+        menu = self.menuBar() or QMenuBar(self)
         menu.addMenu("&File"); menu.addMenu("&View"); menu.addMenu("&Help")
 
-        # Hotkeys
-        act_prev   = QAction("Toggle Preview", self); act_prev.setShortcut(QKeySequence("P"))
-        act_stop   = QAction("STOP", self);           act_stop.setShortcut(QKeySequence("S"))
-        act_export = QAction("Export Last", self);    act_export.setShortcut(QKeySequence("Ctrl+S"))
-        act_gal    = QAction("Open Gallery", self);   act_gal.setShortcut(QKeySequence("G"))
-        self.addAction(act_prev); self.addAction(act_stop); self.addAction(act_export); self.addAction(act_gal)
+        act_prev  = QAction("Toggle Preview", self, shortcut="P")
+        act_stop  = QAction("STOP", self, shortcut="S")
+        act_exp   = QAction("Export Last", self, shortcut="Ctrl+S")
+        act_gal   = QAction("Gallery", self, shortcut="G")
+        act_mode  = QAction("Toggle Export Mode (RAW/Processed)", self, shortcut="Ctrl+E")
+        self.addActions([act_prev, act_stop, act_exp, act_gal, act_mode])
         act_prev.triggered.connect(self.on_toggle_preview)
         act_stop.triggered.connect(self.on_stop)
-        act_export.triggered.connect(self.on_export_last)
+        act_exp.triggered.connect(self.on_export_last)
         act_gal.triggered.connect(self.on_gallery)
+        act_mode.triggered.connect(self.on_toggle_export_mode)
 
         # Layout: left | center | right
         central = QWidget(self)
-        root    = QHBoxLayout(central)
+        root = QHBoxLayout(central)
 
         left = QVBoxLayout()
         for b in (self.btn_preview, self.btn_stop, self.btn_gallery, self.btn_export, self.btn_editor):
@@ -217,160 +173,257 @@ class MainWindow(QMainWindow):
         root.addLayout(right)
         self.setCentralWidget(central)
 
-        # Cute QSS
+        # Styles
         self.setStyleSheet("""
         QMainWindow { background: #f7f9fc; }
         QLabel#cameraView {
-          background: #ffffff;
-          border: 1px solid #e6eaf0;
-          border-radius: 16px;
+          background: #ffffff; border: 1px solid #e6eaf0; border-radius: 16px;
         }
         QLabel#alarmBar {
-          background: #e9fbf0;
-          color: #2f7a43;
-          border: 1px solid #e6eaf0;
-          border-radius: 12px;
-          padding: 6px;
-        }
-        QGroupBox {
-          background: #ffffff;
-          border: 1px solid #e6eaf0;
-          border-radius: 16px;
-          margin-top: 12px;
-          padding: 12px;
+          background: #e9fbf0; color: #2f7a43; border: 1px solid #e6eaf0;
+          border-radius: 12px; padding: 6px;
         }
         QPushButton, QToolButton {
-          background: #ffffff;
-          border: 1px solid #e6eaf0;
-          border-radius: 14px;
-          padding: 8px 12px;
+          background: #ffffff; border: 1px solid #e6eaf0;
+          border-radius: 14px; padding: 8px 12px;
         }
         QPushButton:hover, QToolButton:hover {
-          background: #f0f4ff;
-          border-color: #cdd7ff;
+          background: #f0f4ff; border-color: #cdd7ff;
         }
         QPushButton#btnStop {
-          background: #ff6b6b;
-          color: white;
-          border: none;
-          font-weight: 700;
+          background: #ff6b6b; color: white; border: none; font-weight: 700;
+        }
+        QGroupBox {
+          background: #ffffff; border: 1px solid #e6eaf0;
+          border-radius: 16px; margin-top: 12px; padding: 12px;
         }
         QStatusBar {
-          background: #ffffff;
-          border-top: 1px solid #e6eaf0;
-          padding: 4px 8px;
-          color: #5b6472;
+          background: #ffffff; border-top: 1px solid #e6eaf0;
+          padding: 4px 8px; color: #5b6472;
         }
         """)
 
         # Backend: Picamera2 only
-        self.backend = PiCamBackend(preview_size=(1280, 720))
+        self.backend = PiCamBackend((1280, 720))
         try:
             self.backend.start()
-            self.status.showMessage("Backend: Picamera2 (IMX415)")
+            self.status.showMessage("Backend: Picamera2 (IMX415) — Export mode: RAW")
         except Exception as e:
-            QMessageBox.critical(self, "Picamera2 Error",
-                                 f"Failed to start Picamera2:\n{e}\n\n"
-                                 "Ensure the camera is connected and enabled.")
+            QMessageBox.critical(self, "Picamera2 Error", f"Cannot start camera:\n{e}")
             sys.exit(1)
 
-        # Preview state + timer
+        # Preview timer
         self.preview_on = False
-        self.preview_boost = False  # reserved if you want CLAHE toggle later
-        self.timer = QTimer(self); self.timer.setInterval(33); self.timer.timeout.connect(self.update_frame)
+        self.timer = QTimer(self)
+        self.timer.setInterval(33)  # ~30 FPS
+        self.timer.timeout.connect(self.update_frame)
 
-        # Wire buttons
+        # Live display params (matching image_tools defaults)
+        self.lv_zoom = 1.0
+        self.lv_cx, self.lv_cy = 640, 360  # set on first frame
+        self.lv_contrast = 1.0             # 0.2–3.0
+        self.lv_sharpness = 0.0            # 0.0–3.0
+        self.lv_gamma = 1.0                # 0.2–3.0
+        self.lv_filter_idx = 0
+        self.lv_filters = ["none", "invert", "equalize", "clahe", "edges", "magma"]
+        self._center_inited = False
+
+        # Connect buttons
         self.btn_preview.clicked.connect(self.on_toggle_preview)
         self.btn_stop.clicked.connect(self.on_stop)
         self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_export.clicked.connect(self.on_export_last)
         self.btn_editor.clicked.connect(self.on_open_editor)
 
-    # Actions
+        self.tb_zoom.clicked.connect(self.on_set_zoom)
+        self.tb_contrast.clicked.connect(self.on_set_contrast)
+        self.tb_sharp.clicked.connect(self.on_set_sharpness)
+        self.tb_gamma.clicked.connect(self.on_set_gamma)
+        self.tb_filter.clicked.connect(self.on_cycle_filter)
+        self.tb_reset.clicked.connect(self.on_reset_view)
+
+    # ---------- helpers ----------
+    def _clamp(self, v, lo, hi): return max(lo, min(hi, v))
+
+    # ---------- actions ----------
     def on_toggle_preview(self):
         if not self.preview_on:
             self.preview_on = True
             self.timer.start()
-            self.status.showMessage("Preview ON")
             self.alarm.setText("Preview: ON")
         else:
             self.preview_on = False
             self.timer.stop()
-            self.status.showMessage("Preview OFF")
             self.alarm.setText("Preview: OFF")
 
     def on_stop(self):
         self.preview_on = False
         self.timer.stop()
-        self.status.showMessage("Stopped")
         self.alarm.setText("STOP PRESSED!")
-        try:
-            self.backend.stop()
-        except Exception:
-            pass
+        self.backend.stop()
+
+    def on_toggle_export_mode(self):
+        self.export_processed = not self.export_processed
+        mode = "PROCESSED" if self.export_processed else "RAW"
+        self.status.showMessage(f"Backend: Picamera2 (IMX415) — Export mode: {mode}")
 
     def on_export_last(self):
-        """
-        Save the CURRENT live frame to disk (captures/capture_XXXX.png).
-        Uses your io_utils.capture_and_save_frame().
-        """
         if not self.preview_on:
-            QMessageBox.information(self, "Export", "Start preview first to export the current frame.")
+            QMessageBox.information(self, "Export", "Start preview first.")
             return
         try:
-            bgr = self.backend.grab_bgr()
-            path, _ = capture_and_save_frame(bgr, save_dir=self.save_dir)
+            if self.export_processed:
+                gray = self.backend.grab_gray()
+                disp_bgr = self.apply_pipeline(gray)
+                path, _ = capture_and_save_frame(disp_bgr, save_dir=self.save_dir)
+            else:
+                bgr = self.backend.grab_bgr()
+                path, _ = capture_and_save_frame(bgr, save_dir=self.save_dir)
             self.session_paths.append(path)
             self.last_path = Path(path)
-            self.status.showMessage(f"Saved: {path}")
+            self.status.showMessage(f"Saved ({'processed' if self.export_processed else 'raw'}): {path}")
         except Exception as e:
-            QMessageBox.critical(self, "Export", f"Failed to save frame:\n{e}")
+            QMessageBox.critical(self, "Export", f"Failed to save:\n{e}")
 
     def on_gallery(self):
         was_on = self.preview_on
-        if was_on:
-            self.on_toggle_preview()
-
+        if was_on: self.on_toggle_preview()
         try:
             if self.session_paths:
                 gal = Gallery(self.session_paths, window_name="Gallery (session)")
                 gal.run(start_at=str(self.last_path) if self.last_path else None)
             else:
-                import glob, os
-                all_paths = sorted(glob.glob(os.path.join(self.save_dir, "capture_*.png")))
+                all_paths = sorted((Path(self.save_dir)).glob("capture_*.png"))
                 if not all_paths:
                     QMessageBox.information(self, "Gallery", "No images in captures/.")
                 else:
-                    gal = Gallery(all_paths, window_name="Gallery (all)")
-                    gal.run(start_at=str(self.last_path) if self.last_path else None)
+                    gal = Gallery([str(p) for p in all_paths], window_name="Gallery (all)")
+                    gal.run()
         except Exception as e:
-            QMessageBox.critical(self, "Gallery", f"Failed to open gallery:\n{e}")
+            QMessageBox.critical(self, "Gallery", str(e))
         finally:
-            if was_on:
-                self.on_toggle_preview()
-            self.status.showMessage("Returned from Gallery.")
+            if was_on: self.on_toggle_preview()
 
     def on_open_editor(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
-        )
-        if not path:
-            return
-        QMessageBox.information(self, "Editor", f"Selected: {path}\n(You can wire image_tools.py here later.)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
+        if path:
+            QMessageBox.information(self, "Editor", f"Selected:\n{path}\n(Integrate image_tools.py here if desired.)")
 
-    # Timer tick — grab, convert, paint
+    # ---------- live controls ----------
+    def on_set_zoom(self):
+        val, ok = QInputDialog.getInt(self, "Zoom", "Zoom (%)", int(self.lv_zoom * 100), 100, 1000, 5)
+        if ok: self.lv_zoom = self._clamp(val / 100.0, 1.0, 10.0)
+
+    def on_set_contrast(self):
+        val, ok = QInputDialog.getDouble(self, "Contrast (alpha)", "0.2 – 3.0", self.lv_contrast, 0.2, 3.0, 2)
+        if ok: self.lv_contrast = self._clamp(val, 0.2, 3.0)
+
+    def on_set_sharpness(self):
+        val, ok = QInputDialog.getDouble(self, "Sharpness", "0.0 – 3.0", self.lv_sharpness, 0.0, 3.0, 2)
+        if ok: self.lv_sharpness = self._clamp(val, 0.0, 3.0)
+
+    def on_set_gamma(self):
+        val, ok = QInputDialog.getDouble(self, "Gamma (display-only)", "0.2 – 3.0", self.lv_gamma, 0.2, 3.0, 2)
+        if ok: self.lv_gamma = self._clamp(val, 0.2, 3.0)
+
+    def on_cycle_filter(self):
+        self.lv_filter_idx = (self.lv_filter_idx + 1) % len(self.lv_filters)
+        self.status.showMessage(f"Filter → {self.lv_filters[self.lv_filter_idx]}")
+
+    def on_reset_view(self):
+        self.lv_zoom = 1.0
+        self.lv_contrast = 1.0
+        self.lv_sharpness = 0.0
+        self.lv_gamma = 1.0
+        self.lv_filter_idx = 0
+        self.status.showMessage("View reset")
+
+    # ---------- live processing pipeline (like image_tools.Editor.render) ----------
+    def apply_pipeline(self, gray: np.ndarray) -> np.ndarray:
+        img = gray
+        h, w = img.shape[:2]
+        if not self._center_inited:
+            self.lv_cx, self.lv_cy = w // 2, h // 2
+            self._center_inited = True
+
+        # Zoom & pan (centered on lv_cx, lv_cy)
+        if self.lv_zoom > 1.0:
+            hw = int((w / self.lv_zoom) / 2)
+            hh = int((h / self.lv_zoom) / 2)
+            x1 = max(0, min(w - 1, self.lv_cx - hw))
+            y1 = max(0, min(h - 1, self.lv_cy - hh))
+            x2 = max(0, min(w,     self.lv_cx + hw))
+            y2 = max(0, min(h,     self.lv_cy + hh))
+            crop = img[y1:y2, x1:x2]
+            if crop.size:
+                img = cv2.resize(crop, (w, h), interpolation=cv2.INTER_CUBIC)
+
+        # Contrast (alpha around 128)
+        if abs(self.lv_contrast - 1.0) > 1e-3:
+            img = cv2.convertScaleAbs(img, alpha=self.lv_contrast, beta=(1 - self.lv_contrast) * 128)
+
+        # Gamma (display-only)
+        if abs(self.lv_gamma - 1.0) > 1e-3:
+            inv = 1.0 / max(self.lv_gamma, 1e-6)
+            lut = np.array([((i / 255.0) ** inv) * 255.0 for i in range(256)], dtype=np.uint8)
+            img = cv2.LUT(img, lut)
+
+        # Sharpness (unsharp mask)
+        if self.lv_sharpness > 0:
+            blur = cv2.GaussianBlur(img, (0, 0), sigmaX=1.0 + self.lv_sharpness)
+            img = cv2.addWeighted(img, 1 + self.lv_sharpness, blur, -self.lv_sharpness, 0)
+
+        # Filters
+        f = self.lv_filters[self.lv_filter_idx]
+        if f == "invert":
+            img = 255 - img
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif f == "equalize":
+            img = cv2.equalizeHist(img)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif f == "clahe":
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            img = clahe.apply(img)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif f == "edges":
+            edges = cv2.Canny(img, 50, 150)
+            img = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+        elif f == "magma":
+            img = cv2.applyColorMap(img, cv2.COLORMAP_MAGMA)  # BGR
+            return img
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+        return img
+
+    # ---------- keyboard pan when zoomed ----------
+    def keyPressEvent(self, e):
+        step = int(50 / max(self.lv_zoom, 1.0))
+        if e.key() == Qt.Key.Key_Left:
+            self.lv_cx = max(0, self.lv_cx - step)
+        elif e.key() == Qt.Key.Key_Right:
+            self.lv_cx = self.lv_cx + step
+        elif e.key() == Qt.Key.Key_Up:
+            self.lv_cy = max(0, self.lv_cy - step)
+        elif e.key() == Qt.Key.Key_Down:
+            self.lv_cy = self.lv_cy + step
+        else:
+            super().keyPressEvent(e)
+
+    # ---------- preview tick ----------
     def update_frame(self):
         try:
-            frame = self.backend.grab_gray()
+            gray = self.backend.grab_gray()
         except Exception as e:
             self.timer.stop()
             self.preview_on = False
-            self.alarm.setText(f"Preview error: {e}")
+            self.alarm.setText(f"Error: {e}")
             return
 
-        # Optional: if self.preview_boost: apply CLAHE here
-        px = gray_to_qpix(frame)
-        px = px.scaled(
+        disp_bgr = self.apply_pipeline(gray)
+        h, w = disp_bgr.shape[:2]
+        qimg = QImage(disp_bgr.data, w, h, 3 * w, QImage.Format.Format_BGR888)
+        px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
