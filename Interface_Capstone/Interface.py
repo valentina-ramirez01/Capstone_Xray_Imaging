@@ -1,8 +1,10 @@
 # Interface.py — PyQt6 GUI for IMX415 (Picamera2) ONLY, with live display controls + export mode toggle.
+# Includes robust STOP → Preview restart logic.
 
 # --- locate 'xavier' package even if this file is in a different folder ---
 import sys
 from pathlib import Path
+import time  # <-- added
 
 _here = Path(__file__).resolve()
 _root = None
@@ -53,6 +55,7 @@ class PiCamBackend:
         self.cam = Picamera2()
         self.cam.configure(self.cam.create_preview_configuration(main={"size": self.preview_size}))
         self.cam.start()
+        time.sleep(0.1)  # give the pipeline a moment to initialize
 
     def stop(self):
         if self.cam:
@@ -60,7 +63,13 @@ class PiCamBackend:
                 self.cam.stop()
             except Exception:
                 pass
+            try:
+                # Fully release the camera device (if available in your Picamera2 build)
+                self.cam.close()
+            except Exception:
+                pass
         self.cam = None
+        time.sleep(0.2)  # short breather so libcamera settles before restart
 
     def _capture(self):
         if not self.cam:
@@ -247,11 +256,31 @@ class MainWindow(QMainWindow):
 
     # ---------- actions ----------
     def on_toggle_preview(self):
+        """
+        Toggle the live preview.
+        If STOP was pressed earlier (camera released), this safely re-inits Picamera2.
+        """
         if not self.preview_on:
+            # Ensure timer is off to avoid a grab during (re)start
+            self.timer.stop()
+
+            # If the camera was fully stopped, re-create it
+            if self.backend.cam is None:
+                try:
+                    self.backend.start()
+                    self.status.showMessage("Camera restarted — Preview ON")
+                    time.sleep(0.05)  # small cushion before first capture
+                except Exception as e:
+                    QMessageBox.critical(self, "Camera", f"Failed to (re)start camera:\n{e}")
+                    return
+
+            # Start periodic grabs
             self.preview_on = True
             self.timer.start()
             self.alarm.setText("Preview: ON")
+
         else:
+            # Pause only the UI updates; camera keeps running
             self.preview_on = False
             self.timer.stop()
             self.alarm.setText("Preview: OFF")
@@ -395,20 +424,6 @@ class MainWindow(QMainWindow):
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
         return img
-
-    # ---------- keyboard pan when zoomed ----------
-    def keyPressEvent(self, e):
-        step = int(50 / max(self.lv_zoom, 1.0))
-        if e.key() == Qt.Key.Key_Left:
-            self.lv_cx = max(0, self.lv_cx - step)
-        elif e.key() == Qt.Key.Key_Right:
-            self.lv_cx = self.lv_cx + step
-        elif e.key() == Qt.Key.Key_Up:
-            self.lv_cy = max(0, self.lv_cy - step)
-        elif e.key() == Qt.Key.Key_Down:
-            self.lv_cy = self.lv_cy + step
-        else:
-            super().keyPressEvent(e)
 
     # ---------- preview tick ----------
     def update_frame(self):
