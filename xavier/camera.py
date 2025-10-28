@@ -4,8 +4,8 @@ from typing import Callable, Optional
 import numpy as np
 import cv2
 
-from gallery import Gallery
-from io_utils import capture_and_save_frame
+from xavier.gallery import Gallery
+from xavier.io_utils import capture_and_save_frame
 
 
 def start_camera(

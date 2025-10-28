@@ -37,8 +37,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap, QAction, QKeySequence
 
 # --- your project helpers ---
-from io_utils import capture_and_save_frame
-from gallery import Gallery
+from xavier.io_utils import capture_and_save_frame
+from xavier.gallery import Gallery
 
 
 # ─────────────────────────────────────────────────────────────
