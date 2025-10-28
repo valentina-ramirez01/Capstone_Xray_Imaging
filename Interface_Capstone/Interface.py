@@ -6,6 +6,27 @@ from pathlib import Path
 import numpy as np
 import cv2
 
+# --- make 'xavier' importable even when Interface.py is in a separate folder ---
+import sys, os
+from pathlib import Path
+
+# 1) Try to locate the 'xavier' folder by walking up from this file
+_here = Path(__file__).resolve()
+_root = None
+for parent in [_here.parent, *_here.parents]:
+    if (parent / "xavier").is_dir():
+        _root = parent
+        break
+
+if _root is None:
+    raise RuntimeError("Could not find the 'xavier' folder. Make sure your project has a folder named 'xavier'.")
+
+# 2) Add the project root to sys.path so 'from xavier. ...' works
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+# -------------------------------------------------------------------------------
+
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
