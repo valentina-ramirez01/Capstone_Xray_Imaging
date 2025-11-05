@@ -1,35 +1,11 @@
-# Interface.py — PyQt6 GUI for IMX415 (Picamera2) ONLY, with live display controls + export mode toggle.
-# Includes robust STOP → Preview restart logic.
 
-# --- locate 'xavier' package even if this file is in a different folder ---
 import sys
-from pathlib import Path
-import time  # <-- added
-
-_here = Path(__file__).resolve()
-_root = None
-for parent in [_here.parent, *_here.parents]:
-    if (parent / "xavier").is_dir():
-        _root = parent
-        break
-if _root is None:
-    raise RuntimeError("Could not find the 'xavier' folder. Place this file within the project tree.")
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-
-# --- require Picamera2 (no fallback) ---
-try:
-    from picamera2 import Picamera2
-except Exception as e:
-    print("ERROR: picamera2 is required (no fallback). Install: sudo apt install -y python3-picamera2")
-    print("Details:", e)
-    sys.exit(1)
-
-# --- std imports ---
+from pathlib import Path #para import paths
+import time  #Para dare sleep a la camara
+from picamera2 import Picamera2
 import numpy as np
 import cv2
-
-from PyQt6.QtWidgets import (
+from PyQt6.QtWidgets import ( #Imports todos los tools visuales
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QGroupBox, QToolButton, QStatusBar, QMenuBar,
@@ -38,26 +14,37 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap, QAction
 
-# --- your helpers from xavier/ ---
-from xavier.io_utils import capture_and_save_frame
-from xavier.gallery import Gallery
+#Para encontrar el folder de xavier
+_here = Path(__file__).resolve() 
+_root = None
+for parent in [_here.parent, *_here.parents]:
+    if (parent / "xavier").is_dir():
+        _root = parent # va scanning los files hasta encontrar a Xavier
+        break
+if _root is None:
+    raise RuntimeError("Could not find the 'xavier' folder. Place this file within the project tree.")
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 
+# ---helpers de xavier---
+from xavier.io_utils import capture_and_save_frame #guardar frames en captures/
+from xavier.gallery import Gallery #Para abrir la galeria con archivos
 
 # ─────────────────────────────────────────────────────────────
-# Picamera2 backend (IMX415) — mirrors your test script
+# Picamera2 
 # ─────────────────────────────────────────────────────────────
 class PiCamBackend:
-    def __init__(self, preview_size=(1280, 720)):
+    def __init__(self, preview_size=(1280, 720)): #Guarda el tamano deseado del preview
         self.preview_size = preview_size
         self.cam: Picamera2 | None = None
 
     def start(self):
-        self.cam = Picamera2()
+        self.cam = Picamera2() #crea instancia del preview con el tamano pedido
         self.cam.configure(self.cam.create_preview_configuration(main={"size": self.preview_size}))
         self.cam.start()
         time.sleep(0.1)  # give the pipeline a moment to initialize
 
-    def stop(self):
+    def stop(self): # detiene la camara
         if self.cam:
             try:
                 self.cam.stop()
@@ -71,12 +58,12 @@ class PiCamBackend:
         self.cam = None
         time.sleep(0.2)  # short breather so libcamera settles before restart
 
-    def _capture(self):
+    def _capture(self): # para asegurar que hay una camara
         if not self.cam:
             raise RuntimeError("Picamera2 not started")
         return self.cam.capture_array("main")
 
-    def grab_gray(self) -> np.ndarray:
+    def grab_gray(self) -> np.ndarray: #gray scale
         frame = self._capture()
         if frame.ndim == 2:
             return frame
@@ -99,12 +86,12 @@ class PiCamBackend:
 # ─────────────────────────────────────────────────────────────
 # Main GUI
 # ─────────────────────────────────────────────────────────────
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow): #ventana principal del app
     def __init__(self):
         super().__init__()
 
         # Window
-        self.setWindowTitle("IC X-ray Viewer — IMX415 (Picamera2)")
+        self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280, 720)
 
         # Session / export state
@@ -212,7 +199,7 @@ class MainWindow(QMainWindow):
         }
         """)
 
-        # Backend: Picamera2 only
+        #Activar Pycamera
         self.backend = PiCamBackend((1280, 720))
         try:
             self.backend.start()
