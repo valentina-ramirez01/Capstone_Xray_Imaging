@@ -4,8 +4,8 @@ import time, threading
 from enum import Enum
 from typing import Optional, Callable, Dict, Any
 
-from .config import Config
-from gpio import gpio
+from config import Config
+from xavier.gpio_estop import gpio
 from relay import RelayHat
 from v_reader import MCP3008
 from interlock import Interlocks

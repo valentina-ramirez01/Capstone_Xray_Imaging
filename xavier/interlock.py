@@ -1,5 +1,5 @@
 # xavier/xray_controller_core/safety/interlocks.py
-import gpio
+import xavier.gpio_estop as gpio_estop
 
 class Interlocks:
     """
@@ -14,9 +14,9 @@ class Interlocks:
         self.hb_in = hb_in
         self.debounce = debounce_s
         for p in (estop, door, hb_in):
-            gpio.setup_input(p)
+            gpio_estop.setup_input(p)
 
-    def estop_ok(self) -> bool:     return bool(gpio.read(self.estop, self.debounce))
-    def door_ok(self) -> bool:      return bool(gpio.read(self.door,  self.debounce))
-    def heartbeat_ok(self) -> bool: return bool(gpio.read(self.hb_in, self.debounce))
+    def estop_ok(self) -> bool:     return bool(gpio_estop.read(self.estop, self.debounce))
+    def door_ok(self) -> bool:      return bool(gpio_estop.read(self.door,  self.debounce))
+    def heartbeat_ok(self) -> bool: return bool(gpio_estop.read(self.hb_in, self.debounce))
     def all_ok(self) -> bool:       return self.estop_ok() and self.door_ok() and self.heartbeat_ok()
