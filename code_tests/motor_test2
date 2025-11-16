@@ -1,0 +1,81 @@
+import serial
+import time
+import RPi.GPIO as GPIO
+
+# ---------------- GPIO SETUP ----------------
+GPIO.setmode(GPIO.BCM)
+
+SW1 = 17   # Motor 1 forward limit
+SW2 = 25   # Motor 1 backward limit -> triggers motor 2
+SW3 = 16   # Motor 2 origin (zero position)
+
+GPIO.setup(SW1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SW2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SW3, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# ---------------- SERIAL SETUP ----------------
+ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
+time.sleep(2)
+
+# ---------------- MOTOR FUNCTIONS ----------------
+
+def m1_forward_until_limit():
+    print("Motor 1 → FORWARD until SW1")
+    while GPIO.input(SW1) == 1:   # 1 = not pressed
+        ser.write(b"M1F\n")
+        time.sleep(0.002)
+    print("SW1 reached")
+
+
+def m1_backward_until_limit():
+    print("Motor 1 → BACKWARD until SW2")
+    while GPIO.input(SW2) == 1:
+        ser.write(b"M1B\n")
+        time.sleep(0.002)
+    print("SW2 reached")
+
+
+def m2_backward_until_origin():
+    print("Motor 2 → BACKWARD until SW3 (origin)")
+    while GPIO.input(SW3) == 1:
+        ser.write(b"M2B\n")
+        time.sleep(0.002)
+    print("Motor 2 origin reached")
+
+
+def m2_forward_90deg():
+    print("Motor 2 → FORWARD 90°")
+    ser.write(b"M2F90\n")
+    time.sleep(0.5)   # IMPORTANT delay to ensure Arduino executes the move
+
+
+# ---------------- MAIN CONTROL LOOP ----------------
+print("Press:")
+print("  s → Start Motor 1 forward")
+print("  r → Return Motor 1 backward & start Motor 2 sequence")
+print("  f → Return Motor 2 to origin")
+
+while True:
+    key = input(">> ")
+
+    # ---- START (S) ----
+    if key.lower() == "s":
+        m1_forward_until_limit()
+
+    # ---- RETURN (R) ----
+    if key.lower() == "r":
+        m1_backward_until_limit()   # reaches SW2
+
+        # -------------------
+        # MOTOR 2 SEQUENCE
+        # -------------------
+        m2_backward_until_origin()   # motor 2 moves until SW3
+
+        # HERE is the new delay before 90°
+        time.sleep(0.3)
+
+        m2_forward_90deg()
+
+    # ---- MOTOR 2 RETURN ONLY (F) ----
+    if key.lower() == "f":
+        m2_backward_until_origin()
