@@ -12,11 +12,19 @@ from xavier.relay import hv_on, hv_off
 import xavier.gpio_estop as gpio_estop
 from xavier.leds import LedPanel
 
-#PLACEHOLDER PINS — UPDATE THESE
-leds = LedPanel(red=1, amber=2, green=3, blue=4)
+# -------------------------------
+# UPDATED LED PINS (REAL PINS)
+# Red   = GPIO 26
+# Amber = GPIO 13
+# Green = GPIO 21
+# Blue  = GPIO 27
+# -------------------------------
+
+leds = LedPanel(red=26, amber=13, green=21, blue=27)
 
 PRE_ROLL_S = 0.5
 POST_HOLD_S = 0.5
+
 
 def update_leds(*, hv=False, fault=False, preview=False, armed=False):
     """
@@ -38,8 +46,10 @@ def update_leds(*, hv=False, fault=False, preview=False, armed=False):
         state=state
     )
 
+
 def handle_capture(filepath: str, frame: np.ndarray) -> None:
     print(f"[Capture] Saved to {filepath} | shape={frame.shape}")
+
 
 def _on_estop_fault():
     print("\n[E-STOP] TRIPPED — shutting down camera & HV, entering Emergency Hold.")
@@ -57,17 +67,21 @@ def _on_estop_fault():
     print("E-Stop is ACTIVE. Release the button, then press 'r' to reset latch, or 'q' to quit.")
     sys.stdout.flush()
 
+
 def should_stop_preview() -> bool:
     return gpio_estop.faulted()
+
 
 def banner():
     ok_now = gpio_estop.estop_ok_now()
     latched = gpio_estop.faulted()
+
     state = "OK" if ok_now else "PRESSED"
     latch = "FAULT LATCHED" if latched else "no fault"
 
     print("\n=== XRAY MENU ===")
     print(f"E-STOP: {state} | Latch: {latch}")
+
 
 def menu() -> str:
     while True:
@@ -90,6 +104,7 @@ def menu() -> str:
         print("[2] Photo (one-shot)")
         print("[q] Quit")
         return input("Select: ").strip().lower()
+
 
 def emergency_hold_blocking():
     print("\n=== EMERGENCY HOLD ===")
@@ -120,6 +135,7 @@ def emergency_hold_blocking():
             else:
                 print("Cannot clear: button still pressed.")
 
+
 def run_preview():
     if gpio_estop.faulted():
         print("Cannot start preview: FAULT latched.")
@@ -140,6 +156,7 @@ def run_preview():
         hv_off()
         update_leds()
         print("[HV] OFF")
+
 
 def run_photo():
     if gpio_estop.faulted():
@@ -189,8 +206,10 @@ def run_photo():
 
         except Exception as e:
             print(f"[Photo] Aborted: {e}")
-            try: hv_off()
-            except: pass
+            try:
+                hv_off()
+            except:
+                pass
             update_leds(fault=True)
 
             shutdown_cam()
@@ -211,6 +230,7 @@ def run_photo():
         if again != "y":
             update_leds()
             return
+
 
 def main():
     gpio_estop.start_monitor(_on_estop_fault)
@@ -244,8 +264,10 @@ def main():
         print("\n[Main] KeyboardInterrupt — exiting.")
 
     finally:
-        try: hv_off()
-        except: pass
+        try:
+            hv_off()
+        except:
+            pass
 
         update_leds()
 
@@ -254,6 +276,7 @@ def main():
         gpio_estop.stop_monitor()
         gpio_estop.cleanup()
         leds.cleanup()
+
 
 if __name__ == "__main__":
     main()

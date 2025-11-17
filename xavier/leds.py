@@ -1,6 +1,3 @@
-# GPIO pin numbers are placeholders — update before wiring!
-# red=1, amber=2, green=3, blue=4
-
 import RPi.GPIO as GPIO
 
 class LedPanel:
@@ -12,15 +9,16 @@ class LedPanel:
       - BLUE  : X-ray ON (EXPOSE or PREVIEW)
     """
 
-    def __init__(self, red: int, amber: int, green: int, blue: int):
-        # USER MUST UPDATE THESE PIN NUMBERS BEFORE USING
-        self.red = red
-        self.amber = amber
-        self.green = green
-        self.blue = blue
+    def __init__(self):
+        # Updated pin numbers
+        self.red = 26
+        self.amber = 13
+        self.green = 21
+        self.blue = 27
 
         GPIO.setmode(GPIO.BCM)
-        for p in (red, amber, green, blue):
+
+        for p in (self.red, self.amber, self.green, self.blue):
             GPIO.setup(p, GPIO.OUT)
             GPIO.output(p, GPIO.LOW)
 
