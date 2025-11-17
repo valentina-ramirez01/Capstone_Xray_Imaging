@@ -52,15 +52,23 @@ from xavier.leds import LedPanel  # <-- LED hardware
 PRE_ROLL_S = 0.5
 POST_HOLD_S = 0.5
 
-# ULN2003 stepper settings (from your ULN2003 test)
-ULN_PINS_BCM = (16, 6, 5, 12)
+# ULN2003 stepper settings
+# Standardized to match main.py: IN1=16, IN2=6, IN3=5, IN4=25
+ULN_PINS_BCM = (16, 6, 5, 25)
 ULN_STEP_SLEEP = 0.003
 ULN_SEQUENCE = [
-    [1,0,0,1], [1,0,0,0], [1,1,0,0], [0,1,0,0],
-    [0,1,1,0], [0,0,1,0], [0,0,1,1], [0,0,0,1]
+    [1,0,0,1],
+    [1,0,0,0],
+    [1,1,0,0],
+    [0,1,0,0],
+    [0,1,1,0],
+    [0,0,1,0],
+    [0,0,1,1],
+    [0,0,0,1],
 ]
 ULN_STEPS_PER_REV = 4096
-ULN_STEPS_90 = ULN_STEPS_PER_REV // 4
+ULN_STEPS_90 = ULN_STEPS_PER_REV // 4     # 90°
+ULN_STEPS_45 = ULN_STEPS_PER_REV // 8     # 45°
 
 
 # ============================================================
@@ -84,10 +92,14 @@ class PiCamBackend:
 
     def stop(self):
         if self.cam:
-            try: self.cam.stop()
-            except: pass
-            try: self.cam.close()
-            except: pass
+            try:
+                self.cam.stop()
+            except:
+                pass
+            try:
+                self.cam.close()
+            except:
+                pass
         self.cam = None
         self._mode = "stopped"
         time.sleep(0.2)
@@ -104,8 +116,10 @@ class PiCamBackend:
         try:
             self.cam.switch_mode(cfg)
         except Exception:
-            try: self.cam.stop()
-            except: pass
+            try:
+                self.cam.stop()
+            except:
+                pass
             self.cam.configure(cfg)
             self.cam.start()
         self._mode = mode
@@ -182,6 +196,7 @@ class MainWindow(QMainWindow):
         self.btn_gallery = QPushButton("Gallery")
         self.btn_export  = QPushButton("Export Last")
         self.btn_xray    = QPushButton("XRAY Photo")
+        self.btn_rotate  = QPushButton("Rotate Sample")   # <-- NEW
         self.btn_twist   = QPushButton("Twist 90°")
         self.btn_editor  = QPushButton("Open Editor")
 
@@ -223,7 +238,8 @@ class MainWindow(QMainWindow):
 
         left = QVBoxLayout()
         for b in (self.btn_preview, self.btn_stop, self.btn_gallery,
-                  self.btn_export, self.btn_xray, self.btn_twist, self.btn_editor):
+                  self.btn_export, self.btn_xray, self.btn_rotate,
+                  self.btn_twist, self.btn_editor):
             left.addWidget(b)
         left.addStretch(1)
 
@@ -288,6 +304,7 @@ class MainWindow(QMainWindow):
         self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_export.clicked.connect(self.on_export_last)
         self.btn_xray.clicked.connect(self.on_xray_photo)
+        self.btn_rotate.clicked.connect(self.on_rotate_sample)   # <-- NEW
         self.btn_twist.clicked.connect(self.on_uln_twist)
         self.btn_editor.clicked.connect(self.on_open_editor)
 
@@ -342,15 +359,18 @@ class MainWindow(QMainWindow):
 
         if latched:
             self.alarm.setText("E-STOP FAULT — Reset latch manually on the hardware.")
-            self.alarm.setStyleSheet("background:#ffe9e9;color:#7a2f2f;"
-                                     "border-radius:12px;padding:6px;"
-                                     "border:1px solid #f3b8b8;")
+            self.alarm.setStyleSheet(
+                "background:#ffe9e9;color:#7a2f2f;"
+                "border-radius:12px;padding:6px;"
+                "border:1px solid #f3b8b8;"
+            )
 
             # Hardware LEDs → FAULT state
             self.update_leds(fault=True)
 
             # Disable dangerous buttons
-            for b in (self.btn_preview, self.btn_export, self.btn_xray, self.btn_twist):
+            for b in (self.btn_preview, self.btn_export,
+                      self.btn_xray, self.btn_rotate, self.btn_twist):
                 b.setEnabled(False)
 
             self._prev_estop_fault = True
@@ -359,19 +379,24 @@ class MainWindow(QMainWindow):
             # If fault was previously active and now is cleared → show message:
             if self._prev_estop_fault:
                 self.alarm.setText("Safety latch has been reset.")
-                self.alarm.setStyleSheet("background:#e9fbf0;color:#2f7a43;"
-                                         "border-radius:12px;padding:6px;"
-                                         "border:1px solid #e6eaf0;")
+                self.alarm.setStyleSheet(
+                    "background:#e9fbf0;color:#2f7a43;"
+                    "border-radius:12px;padding:6px;"
+                    "border:1px solid #e6eaf0;"
+                )
             else:
                 self.alarm.setText("OK")
-                self.alarm.setStyleSheet("background:#e9fbf0;color:#2f7a43;"
-                                         "border-radius:12px;padding:6px;"
-                                         "border:1px solid #e6eaf0;")
+                self.alarm.setStyleSheet(
+                    "background:#e9fbf0;color:#2f7a43;"
+                    "border-radius:12px;padding:6px;"
+                    "border:1px solid #e6eaf0;"
+                )
 
             # Hardware LEDs → back to idle
             self.update_leds()
 
-            for b in (self.btn_preview, self.btn_export, self.btn_xray, self.btn_twist):
+            for b in (self.btn_preview, self.btn_export,
+                      self.btn_xray, self.btn_rotate, self.btn_twist):
                 b.setEnabled(True)
 
             self._prev_estop_fault = False
@@ -444,11 +469,16 @@ class MainWindow(QMainWindow):
             gal.run()
 
     def on_open_editor(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open Image", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Image", "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+        )
         if path:
-            QMessageBox.information(self, "Editor",
-                f"You selected:\n{path}\nIntegrate image_tools if desired.")
+            QMessageBox.information(
+                self,
+                "Editor",
+                f"You selected:\n{path}\nIntegrate image_tools if desired."
+            )
 
     # ============================================================
     # XRAY PHOTO (HV CONTROL)
@@ -515,14 +545,78 @@ class MainWindow(QMainWindow):
                 self.update_leds()
 
     # ============================================================
-    # ULN2003 TWIST 90° + RETURN
+    # STEPPER: ROTATE SAMPLE 45°
     # ============================================================
-    def on_uln_twist(self):
+    def on_rotate_sample(self):
+        """
+        Rotate the sample (stepper motor) by 45° forward on each press.
+        Uses ULN2003 driver on pins (16, 6, 5, 25).
+        """
         try:
             import RPi.GPIO as GPIO
         except Exception as e:
             QMessageBox.critical(self, "Stepper", str(e))
             return
+
+        # Optional: block if E-STOP latched
+        try:
+            if gpio_estop.faulted():
+                QMessageBox.warning(self, "Stepper", "Cannot move: E-STOP latched.")
+                return
+        except:
+            pass
+
+        self.alarm.setText("Stepper: rotating sample 45°…")
+        QApplication.processEvents()
+
+        try:
+            GPIO.setmode(GPIO.BCM)
+            for pin in ULN_PINS_BCM:
+                GPIO.setup(pin, GPIO.OUT)
+                GPIO.output(pin, GPIO.LOW)
+
+            def step(values):
+                for pin, val in zip(ULN_PINS_BCM, values):
+                    GPIO.output(pin, GPIO.HIGH if val else GPIO.LOW)
+                time.sleep(ULN_STEP_SLEEP)
+
+            idx = 0
+            for _ in range(ULN_STEPS_45):
+                step(ULN_SEQUENCE[idx])
+                idx = (idx + 1) % len(ULN_SEQUENCE)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Stepper", str(e))
+        finally:
+            try:
+                for pin in ULN_PINS_BCM:
+                    GPIO.output(pin, GPIO.LOW)
+                # IMPORTANT: do NOT call GPIO.cleanup() here,
+                # it would break E-STOP, LEDs, and HV GPIO.
+            except:
+                pass
+            self.alarm.setText("Stepper: 45° rotation done.")
+
+    # ============================================================
+    # ULN2003 TWIST 90° + RETURN
+    # ============================================================
+    def on_uln_twist(self):
+        """
+        Move stepper +90° and then back -90° using same pins as main.py.
+        """
+        try:
+            import RPi.GPIO as GPIO
+        except Exception as e:
+            QMessageBox.critical(self, "Stepper", str(e))
+            return
+
+        # Optional E-STOP check
+        try:
+            if gpio_estop.faulted():
+                QMessageBox.warning(self, "Stepper", "Cannot move: E-STOP latched.")
+                return
+        except:
+            pass
 
         self.alarm.setText("Stepper: +90°, then return…")
         QApplication.processEvents()
@@ -542,12 +636,12 @@ class MainWindow(QMainWindow):
             idx = 0
             for _ in range(ULN_STEPS_90):
                 step(ULN_SEQUENCE[idx])
-                idx = (idx + 1) % 8
+                idx = (idx + 1) % len(ULN_SEQUENCE)
 
             # backward 90
             for _ in range(ULN_STEPS_90):
                 step(ULN_SEQUENCE[idx])
-                idx = (idx - 1) % 8
+                idx = (idx - 1) % len(ULN_SEQUENCE)
 
         except Exception as e:
             QMessageBox.critical(self, "Stepper", str(e))
@@ -555,33 +649,45 @@ class MainWindow(QMainWindow):
             try:
                 for pin in ULN_PINS_BCM:
                     GPIO.output(pin, GPIO.LOW)
-                GPIO.cleanup()
+                # Again, no GPIO.cleanup() to avoid breaking shared GPIO use.
             except:
                 pass
-            self.alarm.setText("Stepper: done")
+            self.alarm.setText("Stepper: 90° twist cycle done.")
 
     # ============================================================
     # DISPLAY CONTROLS
     # ============================================================
     def on_set_zoom(self):
-        v, ok = QInputDialog.getInt(self, "Zoom", "Zoom (%)",
-            int(self.lv_zoom*100), 100, 1000, 10)
-        if ok: self.lv_zoom = max(1.0, min(v/100.0, 10.0))
+        v, ok = QInputDialog.getInt(
+            self, "Zoom", "Zoom (%)",
+            int(self.lv_zoom * 100), 100, 1000, 10
+        )
+        if ok:
+            self.lv_zoom = max(1.0, min(v / 100.0, 10.0))
 
     def on_set_contrast(self):
-        v, ok = QInputDialog.getDouble(self, "Contrast", "0.2–3.0",
-            self.lv_contrast, 0.2, 3.0, 2)
-        if ok: self.lv_contrast = v
+        v, ok = QInputDialog.getDouble(
+            self, "Contrast", "0.2–3.0",
+            self.lv_contrast, 0.2, 3.0, 2
+        )
+        if ok:
+            self.lv_contrast = v
 
     def on_set_sharpness(self):
-        v, ok = QInputDialog.getDouble(self, "Sharpness", "0.0–3.0",
-            self.lv_sharpness, 0.0, 3.0, 2)
-        if ok: self.lv_sharpness = v
+        v, ok = QInputDialog.getDouble(
+            self, "Sharpness", "0.0–3.0",
+            self.lv_sharpness, 0.0, 3.0, 2
+        )
+        if ok:
+            self.lv_sharpness = v
 
     def on_set_gamma(self):
-        v, ok = QInputDialog.getDouble(self, "Gamma", "0.2–3.0",
-            self.lv_gamma, 0.2, 3.0, 2)
-        if ok: self.lv_gamma = v
+        v, ok = QInputDialog.getDouble(
+            self, "Gamma", "0.2–3.0",
+            self.lv_gamma, 0.2, 3.0, 2
+        )
+        if ok:
+            self.lv_gamma = v
 
     def on_cycle_filter(self):
         self.lv_filter_idx = (self.lv_filter_idx + 1) % len(self.filters)
@@ -604,7 +710,7 @@ class MainWindow(QMainWindow):
 
         # Lazy center init
         if not self._center_init:
-            self.lv_cx, self.lv_cy = w//2, h//2
+            self.lv_cx, self.lv_cy = w // 2, h // 2
             self._center_init = True
 
         # Zoom crop
@@ -621,21 +727,28 @@ class MainWindow(QMainWindow):
 
         # Contrast
         if abs(self.lv_contrast - 1.0) > 1e-3:
-            img = cv2.convertScaleAbs(img, alpha=self.lv_contrast,
-                                      beta=(1 - self.lv_contrast) * 128)
+            img = cv2.convertScaleAbs(
+                img,
+                alpha=self.lv_contrast,
+                beta=(1 - self.lv_contrast) * 128
+            )
 
         # Gamma
         if abs(self.lv_gamma - 1.0) > 1e-3:
             inv = 1.0 / max(self.lv_gamma, 1e-6)
-            lut = np.array([((i/255.0)**inv)*255 for i in range(256)],
-                           dtype=np.uint8)
+            lut = np.array(
+                [((i / 255.0) ** inv) * 255 for i in range(256)],
+                dtype=np.uint8
+            )
             img = cv2.LUT(img, lut)
 
         # Sharpness
         if self.lv_sharpness > 0:
-            blur = cv2.GaussianBlur(img, (0,0), 1 + self.lv_sharpness)
-            img = cv2.addWeighted(img, 1 + self.lv_sharpness,
-                                  blur, -self.lv_sharpness, 0)
+            blur = cv2.GaussianBlur(img, (0, 0), 1 + self.lv_sharpness)
+            img = cv2.addWeighted(
+                img, 1 + self.lv_sharpness,
+                blur, -self.lv_sharpness, 0
+            )
 
         # Filters
         f = self.filters[self.lv_filter_idx]
@@ -646,7 +759,7 @@ class MainWindow(QMainWindow):
             img = cv2.equalizeHist(img)
             return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         elif f == "clahe":
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             img = clahe.apply(img)
             return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         elif f == "edges":
@@ -673,7 +786,7 @@ class MainWindow(QMainWindow):
 
         disp = self.apply_pipeline(gray)
         h, w = disp.shape[:2]
-        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
+        qimg = QImage(disp.data, w, h, 3 * w, QImage.Format.Format_BGR888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
