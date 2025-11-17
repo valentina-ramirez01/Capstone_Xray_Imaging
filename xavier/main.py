@@ -11,6 +11,7 @@ from xavier.camera_picam2 import start_camera, capture_still, shutdown_cam, stop
 from xavier.relay import hv_on, hv_off
 import xavier.gpio_estop as gpio_estop
 from xavier.leds import LedPanel
+from xavier.stepper_28byj import rotate_45     # <-- ADDED
 
 # -------------------------------
 # UPDATED LED PINS (REAL PINS)
@@ -102,13 +103,14 @@ def menu() -> str:
 
         print("[1] Preview (live)")
         print("[2] Photo (one-shot)")
+        print("[3] Move stage (45°)")   # <-- ADDED
         print("[q] Quit")
         return input("Select: ").strip().lower()
 
 
 def emergency_hold_blocking():
     print("\n=== EMERGENCY HOLD ===")
-    print("E-Stop is ACTIVE. System halted.")
+    print("System halted — E-Stop ACTIVE.")
     print("Release the E-Stop, then press 'r' to reset.")
 
     while True:
@@ -244,19 +246,33 @@ def main():
             update_leds()
 
             choice = menu()
+
             if choice == "1":
                 run_preview()
+
             elif choice == "2":
                 run_photo()
+
+            elif choice == "3":     # <-- ADDED
+                if gpio_estop.faulted():
+                    print("Cannot move stage: FAULT latched.")
+                    update_leds(fault=True)
+                else:
+                    print("Rotating stage by 45 degrees...")
+                    rotate_45()
+                    print("Stage movement complete.")
+
             elif choice == "r":
                 if gpio_estop.clear_fault():
                     print("E-Stop latch cleared.")
                     update_leds()
                 else:
                     print("Cannot clear: button still pressed.")
+
             elif choice == "q":
                 print("Bye.")
                 break
+
             else:
                 print("Invalid choice.")
 

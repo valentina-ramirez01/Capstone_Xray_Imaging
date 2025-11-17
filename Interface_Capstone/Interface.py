@@ -46,6 +46,7 @@ from xavier.io_utils import capture_and_save_frame
 from xavier.gallery import Gallery
 from xavier import gpio_estop
 from xavier.relayy import hv_on, hv_off
+from xavier.leds import LedPanel  # <-- LED hardware
 
 # HV timing (match your main.py)
 PRE_ROLL_S = 0.5
@@ -60,8 +61,6 @@ ULN_SEQUENCE = [
 ]
 ULN_STEPS_PER_REV = 4096
 ULN_STEPS_90 = ULN_STEPS_PER_REV // 4
-
-
 
 
 # ============================================================
@@ -151,8 +150,6 @@ class PiCamBackend:
         return img
 
 
-
-
 # ============================================================
 # MAIN GUI
 # ============================================================
@@ -162,6 +159,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("IC X-ray Viewer — IMX415 (Picamera2)")
         self.resize(1280, 720)
+
+        # Hardware LED module (LedPanel uses fixed pins internally)
+        self.leds = LedPanel()
 
         # Session state
         self.session_paths = []
@@ -301,6 +301,35 @@ class MainWindow(QMainWindow):
         # Track previous E-stop state
         self._prev_estop_fault = False
 
+        # Initialize LEDs to idle (all off except whatever policy says)
+        self.update_leds()
+
+    # ============================================================
+    # LED STATE SYNCHRONIZATION
+    # ============================================================
+    def update_leds(self, *, hv=False, fault=False, preview=False, armed=False):
+        """
+        Synchronizes hardware LEDs with GUI states:
+          - RED   : fault / alarm
+          - AMBER : interlocks not OK (not used yet, but wired)
+          - GREEN : armed
+          - BLUE  : preview or expose
+        """
+        state = "IDLE"
+        if fault:
+            state = "FAULT"
+        elif preview:
+            state = "PREVIEW"
+        elif hv:
+            state = "EXPOSE"
+        elif armed:
+            state = "ARMED"
+
+        self.leds.apply(
+            alarm=fault,
+            interlocks_ok=not fault,
+            state=state
+        )
 
     # ============================================================
     # E-STOP MONITOR
@@ -312,11 +341,13 @@ class MainWindow(QMainWindow):
             latched = False
 
         if latched:
-            # NEW MESSAGE YOU REQUESTED:
             self.alarm.setText("E-STOP FAULT — Reset latch manually on the hardware.")
             self.alarm.setStyleSheet("background:#ffe9e9;color:#7a2f2f;"
                                      "border-radius:12px;padding:6px;"
                                      "border:1px solid #f3b8b8;")
+
+            # Hardware LEDs → FAULT state
+            self.update_leds(fault=True)
 
             # Disable dangerous buttons
             for b in (self.btn_preview, self.btn_export, self.btn_xray, self.btn_twist):
@@ -333,13 +364,17 @@ class MainWindow(QMainWindow):
                                          "border:1px solid #e6eaf0;")
             else:
                 self.alarm.setText("OK")
-                self.alarm.setStyleSheet("")
+                self.alarm.setStyleSheet("background:#e9fbf0;color:#2f7a43;"
+                                         "border-radius:12px;padding:6px;"
+                                         "border:1px solid #e6eaf0;")
+
+            # Hardware LEDs → back to idle
+            self.update_leds()
 
             for b in (self.btn_preview, self.btn_export, self.btn_xray, self.btn_twist):
                 b.setEnabled(True)
 
             self._prev_estop_fault = False
-
 
     # ============================================================
     # BUTTON ACTIONS
@@ -351,16 +386,25 @@ class MainWindow(QMainWindow):
             self.preview_on = True
             self.timer.start()
             self.alarm.setText("Preview: ON")
+
+            # LED → PREVIEW state
+            self.update_leds(preview=True)
         else:
             self.preview_on = False
             self.timer.stop()
             self.alarm.setText("Preview: OFF")
+
+            # LED → back to idle (unless fault)
+            self.update_leds()
 
     def on_stop(self):
         self.preview_on = False
         self.timer.stop()
         self.backend.stop()
         self.alarm.setText("STOP PRESSED!")
+
+        # LED → back to idle
+        self.update_leds()
 
     def on_toggle_export_mode(self):
         self.export_processed = not self.export_processed
@@ -427,6 +471,9 @@ class MainWindow(QMainWindow):
         try:
             # HV ON
             hv_on()
+            # LEDs → HV / EXPOSE state during pre-roll & shot
+            self.update_leds(hv=True)
+
             t0 = time.time()
             self.alarm.setText("XRAY: HV ON (pre-roll)")
             while time.time() - t0 < PRE_ROLL_S:
@@ -455,14 +502,17 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "XRAY", str(e))
         finally:
-            try: hv_off()
-            except: pass
+            try:
+                hv_off()
+            except:
+                pass
             self.alarm.setText("XRAY: HV OFF")
 
+            # After HV OFF → either return to preview state or idle
             if was_on:
                 self.on_toggle_preview()
-
-
+            else:
+                self.update_leds()
 
     # ============================================================
     # ULN2003 TWIST 90° + RETURN
@@ -510,8 +560,6 @@ class MainWindow(QMainWindow):
                 pass
             self.alarm.setText("Stepper: done")
 
-
-
     # ============================================================
     # DISPLAY CONTROLS
     # ============================================================
@@ -546,8 +594,6 @@ class MainWindow(QMainWindow):
         self.lv_gamma = 1.0
         self.lv_filter_idx = 0
         self.status.showMessage("View reset.")
-
-
 
     # ============================================================
     # LIVE PROCESSING PIPELINE
@@ -611,8 +657,6 @@ class MainWindow(QMainWindow):
         else:
             return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
-
-
     # ============================================================
     # PREVIEW UPDATE
     # ============================================================
@@ -623,6 +667,8 @@ class MainWindow(QMainWindow):
             self.timer.stop()
             self.preview_on = False
             self.alarm.setText(f"Camera error: {e}")
+            # Also drop LEDs to idle
+            self.update_leds()
             return
 
         disp = self.apply_pipeline(gray)
@@ -634,7 +680,6 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
-
 
 
 # ============================================================
