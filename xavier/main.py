@@ -1,3 +1,7 @@
+###############################################
+#  main.py — Integrated Motor 2 + Motor 3     #
+###############################################
+
 import sys, time
 from pathlib import Path
 
@@ -11,143 +15,119 @@ from xavier.camera_picam2 import start_camera, capture_still, shutdown_cam, stop
 from xavier.relay import hv_on, hv_off
 import xavier.gpio_estop as gpio_estop
 from xavier.leds import LedPanel
-from xavier.stepper_28byj import rotate_45     # <-- ADDED
+
+# ⭐ NEW STEP MOTOR IMPORT
+from xavier.stepper_Motor import (
+    motor3_rotate_45,
+    motor2_sequence_switch_driven
+)
+
+import RPi.GPIO as GPIO
 
 # -------------------------------
-# UPDATED LED PINS (REAL PINS)
-# Red   = GPIO 26
-# Amber = GPIO 13
-# Green = GPIO 21
-# Blue  = GPIO 27
+# LEDS
 # -------------------------------
-
 leds = LedPanel(red=26, amber=13, green=21, blue=27)
 
 PRE_ROLL_S = 0.5
 POST_HOLD_S = 0.5
 
+# -------------------------------
+# SWITCHES
+# -------------------------------
+SW1 = 17    # open limit
+SW2 = 24    # close limit → triggers motor 2
+SW3 = 18    # Motor 2 origin
 
+GPIO.setup(SW1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SW2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SW3, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# ============================================================
+# LED CONTROL
+# ============================================================
 def update_leds(*, hv=False, fault=False, preview=False, armed=False):
-    """
-    Maps system states to LED panel policy.
-    """
     state = "IDLE"
-    if fault:
-        state = "FAULT"
-    elif preview:
-        state = "PREVIEW"
-    elif hv:
-        state = "EXPOSE"
-    elif armed:
-        state = "ARMED"
+    if fault: state = "FAULT"
+    elif preview: state = "PREVIEW"
+    elif hv: state = "EXPOSE"
+    elif armed: state = "ARMED"
 
-    leds.apply(
-        alarm=fault,
-        interlocks_ok=not fault,
-        state=state
-    )
+    leds.apply(alarm=fault, interlocks_ok=not fault, state=state)
 
 
-def handle_capture(filepath: str, frame: np.ndarray) -> None:
-    print(f"[Capture] Saved to {filepath} | shape={frame.shape}")
+# ============================================================
+# CAMERA / ESTOP
+# ============================================================
+def handle_capture(filepath: str, frame: np.ndarray):
+    print(f"[Capture] Saved {filepath}")
 
 
 def _on_estop_fault():
-    print("\n[E-STOP] TRIPPED — shutting down camera & HV, entering Emergency Hold.")
-    try:
-        hv_off()
-    except Exception:
-        pass
-
+    print("\n[E-STOP] TRIPPED")
+    hv_off()
     update_leds(fault=True)
-
     shutdown_cam()
     stop_windows()
 
-    print("\n=== EMERGENCY HOLD ===")
-    print("E-Stop is ACTIVE. Release the button, then press 'r' to reset latch, or 'q' to quit.")
-    sys.stdout.flush()
 
-
-def should_stop_preview() -> bool:
+def should_stop_preview():
     return gpio_estop.faulted()
 
 
 def banner():
     ok_now = gpio_estop.estop_ok_now()
     latched = gpio_estop.faulted()
-
-    state = "OK" if ok_now else "PRESSED"
-    latch = "FAULT LATCHED" if latched else "no fault"
-
     print("\n=== XRAY MENU ===")
-    print(f"E-STOP: {state} | Latch: {latch}")
+    print(f"E-STOP: {'OK' if ok_now else 'PRESSED'} | Latch: {'FAULT' if latched else 'no fault'}")
 
 
-def menu() -> str:
+def menu():
     while True:
         banner()
-
         if gpio_estop.faulted():
-            if gpio_estop.estop_ok_now():
-                print("[r] Reset E-Stop latch (button released)")
-            else:
-                print("[r] Reset E-Stop latch (blocked: button still pressed)")
+            print("[r] Reset")
             print("[q] Quit")
-
-            choice = input("Select: ").strip().lower()
-            if choice in ("r", "q"):
-                return choice
-            print("Emergency active — only 'r' or 'q' allowed.")
+            c = input("Select: ").strip().lower()
+            if c in ("r","q"): return c
             continue
 
-        print("[1] Preview (live)")
-        print("[2] Photo (one-shot)")
-        print("[3] Move stage (45°)")   # <-- ADDED
+        print("[1] Preview")
+        print("[2] Photo")
+        print("[3] Rotate stage 45°")
         print("[q] Quit")
         return input("Select: ").strip().lower()
 
 
+# ============================================================
+# EMERGENCY HOLD
+# ============================================================
 def emergency_hold_blocking():
-    print("\n=== EMERGENCY HOLD ===")
-    print("System halted — E-Stop ACTIVE.")
-    print("Release the E-Stop, then press 'r' to reset.")
-
+    print("=== EMERGENCY HOLD ===")
     while True:
-        try:
-            hv_off()
-        except Exception:
-            pass
-
+        hv_off()
         update_leds(fault=True)
-
         shutdown_cam()
-        stop_windows()
 
-        cmd = input("[r]=reset, [q]=quit: ").strip().lower()
-
-        if cmd == "q":
-            sys.exit(1)
-
+        cmd = input("[r]=reset  [q]=quit: ").strip().lower()
+        if cmd == "q": sys.exit(1)
         if cmd == "r":
             if gpio_estop.clear_fault():
-                print("E-Stop latch cleared.")
                 update_leds()
                 return
             else:
-                print("Cannot clear: button still pressed.")
+                print("Still pressed!")
 
 
+# ============================================================
+# PREVIEW
+# ============================================================
 def run_preview():
     if gpio_estop.faulted():
-        print("Cannot start preview: FAULT latched.")
         update_leds(fault=True)
         return
-
     hv_on()
     update_leds(hv=True, preview=True)
-    print("[HV] ON (preview mode)")
-
     try:
         start_camera(
             on_capture=handle_capture,
@@ -157,94 +137,55 @@ def run_preview():
     finally:
         hv_off()
         update_leds()
-        print("[HV] OFF")
 
 
+# ============================================================
+# PHOTO
+# ============================================================
 def run_photo():
     if gpio_estop.faulted():
-        print("Cannot take photo: FAULT latched.")
         update_leds(fault=True)
         return
-
-    print("\nPhoto mode. Press ENTER to shoot; 'b'+ENTER to go back.")
     update_leds(armed=True)
-
+    print("Photo mode.")
     while True:
         if gpio_estop.faulted():
             emergency_hold_blocking()
             return
-
-        cmd = input("[ENTER]=shoot, [b]=back: ").strip().lower()
+        cmd = input("[ENTER]=shoot  [b]=back: ").strip().lower()
         if cmd == "b":
             update_leds()
             return
 
-        try:
-            if gpio_estop.faulted():
-                raise RuntimeError("E-Stop before arming.")
+        hv_on()
+        update_leds(hv=True)
+        time.sleep(PRE_ROLL_S)
 
-            hv_on()
-            update_leds(hv=True)
-            print("[HV] ON — pre-roll...")
-
-            t0 = time.time()
-            while time.time() - t0 < PRE_ROLL_S:
-                if gpio_estop.faulted():
-                    raise RuntimeError("E-stop during pre-roll.")
-                time.sleep(0.01)
-
-            if gpio_estop.faulted():
-                raise RuntimeError("E-stop before capture.")
-
-            path, _ = capture_still(still_size=(1920, 1080), save_dir="captures")
-            print(f"[Photo] Saved: {path}")
-
-            print("[HV] post-hold...")
-            t1 = time.time()
-            while time.time() - t1 < POST_HOLD_S:
-                if gpio_estop.faulted():
-                    raise RuntimeError("E-stop during post-hold.")
-                time.sleep(0.01)
-
-        except Exception as e:
-            print(f"[Photo] Aborted: {e}")
-            try:
-                hv_off()
-            except:
-                pass
-            update_leds(fault=True)
-
-            shutdown_cam()
-            stop_windows()
+        if gpio_estop.faulted():
             emergency_hold_blocking()
             return
 
-        finally:
-            try:
-                hv_off()
-                print("[HV] OFF")
-            except:
-                pass
-
-            update_leds()
-
-        again = input("Take another? [y/N]: ").strip().lower()
-        if again != "y":
-            update_leds()
-            return
+        path,_ = capture_still((1920,1080),"captures")
+        print(f"Saved: {path}")
+        time.sleep(POST_HOLD_S)
+        hv_off()
+        update_leds()
 
 
+# ============================================================
+# MAIN LOOP
+# ============================================================
 def main():
     gpio_estop.start_monitor(_on_estop_fault)
 
     try:
         while True:
+
             if gpio_estop.faulted():
                 emergency_hold_blocking()
                 continue
 
             update_leds()
-
             choice = menu()
 
             if choice == "1":
@@ -253,44 +194,30 @@ def main():
             elif choice == "2":
                 run_photo()
 
-            elif choice == "3":     # <-- ADDED
-                if gpio_estop.faulted():
-                    print("Cannot move stage: FAULT latched.")
-                    update_leds(fault=True)
-                else:
-                    print("Rotating stage by 45 degrees...")
-                    rotate_45()
-                    print("Stage movement complete.")
+            elif choice == "3":
+                print("Rotating 45°…")
+                motor3_rotate_45()
+                print("Done.")
 
             elif choice == "r":
-                if gpio_estop.clear_fault():
-                    print("E-Stop latch cleared.")
-                    update_leds()
-                else:
-                    print("Cannot clear: button still pressed.")
+                gpio_estop.clear_fault()
+                update_leds()
 
             elif choice == "q":
                 print("Bye.")
                 break
 
-            else:
-                print("Invalid choice.")
-
-    except KeyboardInterrupt:
-        print("\n[Main] KeyboardInterrupt — exiting.")
+            # AUTO MOTOR-2 AFTER SW2
+            if GPIO.input(SW2) == 0:
+                print("Motor-2 trigger detected — running auto sequence…")
+                motor2_sequence_switch_driven()
 
     finally:
-        try:
-            hv_off()
-        except:
-            pass
-
+        hv_off()
         update_leds()
-
         shutdown_cam()
         stop_windows()
         gpio_estop.stop_monitor()
-        gpio_estop.cleanup()
         leds.cleanup()
 
 
