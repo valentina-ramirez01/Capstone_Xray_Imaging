@@ -1,5 +1,19 @@
-import sys, time
+import sys
 from pathlib import Path
+
+# ------------------------------------------------------------------
+# FIX: Ensure the project root (folder containing "xavier") is in sys.path
+# ------------------------------------------------------------------
+_here = Path(__file__).resolve()
+project_root = _here.parent.parent   # Interface_Capstone -> Capstone_Xray_Imaging
+
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# ------------------------------------------------------------------
+# Normal imports AFTER sys.path is fixed
+# ------------------------------------------------------------------
+import time
 import numpy as np
 import cv2
 
