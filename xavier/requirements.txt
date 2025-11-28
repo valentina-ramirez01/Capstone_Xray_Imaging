@@ -1,0 +1,13 @@
+numpy>=1.26.0
+opencv-python>=4.8.0.76
+picamera2
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+PyQt6-sip>=13.6.0
+RPi.GPIO
+gpiozero
+matplotlib>=3.7.0
+pillow>=10.0.0
+scipy>=1.11.0
+python-dateutil>=2.8.2
+requests>=2.31.0
