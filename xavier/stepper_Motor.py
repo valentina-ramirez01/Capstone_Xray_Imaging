@@ -70,7 +70,6 @@ def _motor_off(pins):
     for p in pins:
         GPIO.output(p, 0)
 
-
 # ============================================================
 # MOTOR 3 — Rotate 45° each button press
 # ============================================================
@@ -79,10 +78,8 @@ def motor3_rotate_45():
         _step_forward(M3_PINS)
     _motor_off(M3_PINS)
 
-
 # ============================================================
 # MOTOR 2 — AUTOMATIC SEQUENCE
-# Triggered when Motor 1 hits SW2
 # ============================================================
 def motor2_backward_until_origin():
     while GPIO.input(SW3) == 1:
