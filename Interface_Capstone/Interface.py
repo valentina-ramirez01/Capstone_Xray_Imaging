@@ -156,23 +156,27 @@ class MainWindow(QMainWindow):
         self.btn_export  = QPushButton("Export Last")
         self.btn_xray    = QPushButton("XRAY Photo")
 
-        # ⭐ NEW motor control buttons
+        # ⭐ Motor controls
         self.btn_open  = QPushButton("OPEN")
         self.btn_close = QPushButton("CLOSE")
         self.btn_rotate = QPushButton("Rotate 45°")
 
+        # ⭐ NEW: HV PULSE BUTTON
+        self.btn_hv = QPushButton("HV Pulse")
+
         self.btn_editor = QPushButton("Open Editor")
 
-        # Add to left menu
+        # Layout
         central = QWidget()
         root = QHBoxLayout(central)
 
         left = QVBoxLayout()
         for b in (
             self.btn_preview, self.btn_stop, self.btn_gallery,
-            self.btn_export, self.btn_xray, 
-            self.btn_open, self.btn_close,   # ⭐ RESTORED
-            self.btn_rotate,                # ⭐ Motor3
+            self.btn_export, self.btn_xray,
+            self.btn_open, self.btn_close,
+            self.btn_rotate,
+            self.btn_hv,          # ⭐ Added cleanly
             self.btn_editor
         ):
             left.addWidget(b)
@@ -202,10 +206,11 @@ class MainWindow(QMainWindow):
         self.btn_export.clicked.connect(self.on_export)
         self.btn_xray.clicked.connect(self.on_xray)
 
-        # ⭐ NEW
         self.btn_open.clicked.connect(self.on_open_motor)
         self.btn_close.clicked.connect(self.on_close_motor)
         self.btn_rotate.clicked.connect(self.on_rotate45)
+
+        self.btn_hv.clicked.connect(self.on_hv_pulse)   # ⭐ NEW SIGNAL
 
         self.btn_editor.clicked.connect(self.on_open_editor)
 
@@ -240,6 +245,26 @@ class MainWindow(QMainWindow):
         self.alarm.setText("Rotation complete")
 
     # ============================================================
+    # HV 3-SECOND PULSE
+    # ============================================================
+    def on_hv_pulse(self):
+        """Turn HV on for 3 seconds, then off."""
+        if gpio_estop.faulted():
+            self.alarm.setText("E-STOP TRIGGERED")
+            return
+
+        self.alarm.setText("HV ON…")
+        self.update_leds(hv=True)
+        hv_on()
+
+        QApplication.processEvents()
+        time.sleep(3)
+
+        hv_off()
+        self.update_leds(hv=False)
+        self.alarm.setText("HV OFF")
+
+    # ============================================================
     # E-STOP
     # ============================================================
     def check_estop(self):
@@ -247,14 +272,14 @@ class MainWindow(QMainWindow):
             self.alarm.setText("E-STOP TRIGGERED")
             for b in (
                 self.btn_preview, self.btn_export, self.btn_xray,
-                self.btn_open, self.btn_close, self.btn_rotate
+                self.btn_open, self.btn_close, self.btn_rotate, self.btn_hv
             ):
                 b.setEnabled(False)
             return
         else:
             for b in (
                 self.btn_preview, self.btn_export, self.btn_xray,
-                self.btn_open, self.btn_close, self.btn_rotate
+                self.btn_open, self.btn_close, self.btn_rotate, self.btn_hv
             ):
                 b.setEnabled(True)
             self.alarm.setText("OK")
