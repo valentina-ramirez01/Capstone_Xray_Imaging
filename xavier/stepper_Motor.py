@@ -9,7 +9,7 @@ GPIO.setmode(GPIO.BCM)
 # MOTOR 1 — CONTROLLED VIA ARDUINO OVER SERIAL
 # ============================================================
 try:
-    ser = serial.Serial('/dev/ttyACM1', 115200, timeout=1)
+    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
     time.sleep(2)
 except:
     ser = None

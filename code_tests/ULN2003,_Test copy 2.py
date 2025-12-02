@@ -2,10 +2,10 @@ import RPi.GPIO as GPIO
 import time
 
 # Stepper pins (BCM)
-IN1 = 19
-IN2 = 20
-IN3 = 12
-IN4 = 24
+IN1 = 16
+IN2 = 6
+IN3 = 5
+IN4 = 25
 
 LIMIT_PIN = 22   # bottom/home switch
 
