@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
         # LED + Safety Logic
         self.leds = LedPanel()
         self.armed = False   # Green LED = Armed
+        self.banner_lock = False  # Prevent LED auto-banner override
 
         # Camera backend
         self.backend = PiCamBackend()
@@ -241,69 +242,99 @@ class MainWindow(QMainWindow):
         self.update_leds()
 
     # ============================================================
-    # BANNER HELPER
+    # BANNER HELPER (BEAUTIFUL STYLES)
     # ============================================================
-    def set_banner(self, message: str):
+    def set_banner(self, message: str, color: str = None):
+        style = ""
+
+        if color == "green":
+            style = "background-color:#4CAF50;color:white;font-size:26px;font-weight:bold;padding:8px;"
+        elif color == "blue":
+            style = "background-color:#2196F3;color:white;font-size:26px;font-weight:bold;padding:8px;"
+        elif color == "yellow":
+            style = "background-color:#FFEB3B;color:black;font-size:26px;font-weight:bold;padding:8px;"
+        elif color == "red":
+            style = "background-color:#F44336;color:white;font-size:26px;font-weight:bold;padding:8px;"
+        elif color == "orange":
+            style = "background-color:#FF9800;color:white;font-size:26px;font-weight:bold;padding:8px;"
+        else:
+            style = "font-size:26px;font-weight:bold;padding:8px;"
+
+        self.alarm.setStyleSheet(style)
         self.alarm.setText(message)
 
     # ============================================================
-    # LED CONTROL (WITH BANNERS)
+    # LED CONTROL — AUTO BANNERS WITH LOCK
     # ============================================================
     def update_leds(self, *, amber=False, green=False, blue=False):
         self.leds.write(self.leds.amber, amber)
         self.leds.write(self.leds.green, green)
         self.leds.write(self.leds.blue, blue)
 
-        # Banner logic based on LED state
+        # If manually overriding banner, ignore LED banners
+        if self.banner_lock:
+            return
+
+        # Auto banners
         if blue:
-            self.set_banner("HV On — Taking Picture")
+            self.set_banner("HV On — Taking Picture", color="blue")
         elif green:
-            self.set_banner("Ready for X-Ray Picture")
+            self.set_banner("Ready for X-Ray Picture", color="green")
         elif amber:
-            self.set_banner("Tray Moving...")
+            self.set_banner("Tray Moving...", color="yellow")
 
     # ============================================================
     # MOTOR CONTROLS WITH BANNERS
     # ============================================================
     def on_open(self):
-        self.set_banner("Tray Opening")
-        self.armed = False
-        self.update_leds(amber=True)
+        self.banner_lock = True
+        self.set_banner("Tray Opening", color="yellow")
 
         motor3_home()
         motor1_backward_until_switch1()
 
-        self.set_banner("Tray Opened — Place Sample")
+        self.set_banner("Tray Opened — Place Sample", color="yellow")
+
+        self.banner_lock = False
+        self.update_leds()
 
     def on_close(self):
-        self.set_banner("Tray Closing")
-        self.armed = False
-        self.update_leds(amber=True)
+        self.banner_lock = True
+        self.set_banner("Tray Closing", color="yellow")
 
         motor1_forward_until_switch2()
 
-        self.set_banner("Tray Closed")
+        self.set_banner("Tray Closed", color="yellow")
+
+        self.banner_lock = False
         self.update_leds()
 
     def on_align(self):
-        self.set_banner("Aligning Sample")
-        self.update_leds(amber=True)
+        self.banner_lock = True
+        self.set_banner("Aligning Sample", color="yellow")
 
         motor2_home_to_limit3()
         motor2_move_full_up()
 
         self.armed = True
+        self.banner_lock = False
         self.update_leds(green=True)
 
     def on_rotate45(self):
-        self.set_banner("Rotating 45°…")
+        self.banner_lock = True
+        self.set_banner("Rotating 45°…", color="yellow")
         motor3_rotate_45()
-        self.set_banner("Rotation Complete")
+        self.set_banner("Rotation Complete", color="yellow")
+        self.banner_lock = False
+        self.update_leds()
 
     def on_home3(self):
-        self.set_banner("Returning to Home…")
+        self.banner_lock = True
+        self.set_banner("Returning to Home…", color="yellow")
         motor3_home()
-        self.set_banner("Home Complete")
+        self.set_banner("Home Complete", color="yellow")
+        self.banner_lock = False
+        self.update_leds()
 
     # ============================================================
     # XRAY (LEDS + HV + ARMING)
@@ -312,7 +343,7 @@ class MainWindow(QMainWindow):
         if not self.armed:
             QMessageBox.warning(self, "Not Armed",
                 "System is NOT armed.\nAlign sample first (Green ON).")
-            self.set_banner("XRAY BLOCKED — NOT ARMED")
+            self.set_banner("XRAY BLOCKED — NOT ARMED", color="orange")
             return
 
         self.update_leds(blue=True)
@@ -390,17 +421,17 @@ class MainWindow(QMainWindow):
         if not self.preview_on:
             self.preview_on = True
             self.timer.start()
-            self.set_banner("Preview ON")
+            self.set_banner("Preview ON", color="yellow")
         else:
             self.preview_on = False
             self.timer.stop()
-            self.set_banner("Preview OFF")
+            self.set_banner("Preview OFF", color="yellow")
 
     def on_stop(self):
         self.preview_on = False
         self.timer.stop()
         self.backend.stop()
-        self.set_banner("STOPPED")
+        self.set_banner("STOPPED", color="red")
 
     def update_frame(self):
         if not self.preview_on:
@@ -470,15 +501,18 @@ class MainWindow(QMainWindow):
         self.editor_window = ImageEditorWindow(last_file)
         self.editor_window.show()
 
-        self.set_banner(f"Editing Image")
+        self.set_banner(f"Editing Image", color="yellow")
 
     # ============================================================
     # E-STOP
     # ============================================================
     def check_estop(self):
         if gpio_estop.faulted():
-            self.update_leds()  # turn off LEDs
-            self.set_banner("Fault Detected")
+            self.banner_lock = True
+            self.set_banner("Fault Detected", color="red")
+            self.banner_lock = False
+
+            self.update_leds()
             self.btn_open.setEnabled(False)
             self.btn_close.setEnabled(False)
             self.btn_align.setEnabled(False)
