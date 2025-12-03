@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import *
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 
-from xavier.io_utils import capture_and_save_image
+from xavier.io_utils import capture_and_save_frame   # <-- FIXED HERE
 from xavier.gallery import Gallery, ImageEditorWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
@@ -40,7 +40,7 @@ from xavier.camera_picam2 import Picamera2
 # CAMERA BACKEND
 # ============================================================
 class PiCamBackend:
-    def __init__(self, preview_size=(1280, 720), still_size=(1920, 1080)):
+    def __init__(self, preview_size=(1280,720), still_size=(1920,1080)):
         self.preview_size = preview_size
         self.still_size = still_size
         self.cam = None
@@ -63,30 +63,16 @@ class PiCamBackend:
             except: pass
         self.cam = None
         self._mode = "stopped"
-        time.sleep(0.2)
 
     def _ensure(self):
         if self.cam is None:
             raise RuntimeError("Picamera2 not started")
 
-    def _switch(self, mode):
-        self._ensure()
-        if mode == self._mode: return
-        cfg = self.preview_cfg if mode == "preview" else self.still_cfg
-        try:
-            self.cam.switch_mode(cfg)
-        except:
-            try: self.cam.stop()
-            except: pass
-            self.cam.configure(cfg)
-            self.cam.start()
-        self._mode = mode
-        time.sleep(0.05)
-
     def grab_gray(self):
         self._ensure()
         if self._mode != "preview":
-            self._switch("preview")
+            self.cam.switch_mode(self.preview_cfg)
+            self._mode = "preview"
         frame = self.cam.capture_array("main")
         try: return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         except: return frame
@@ -94,7 +80,8 @@ class PiCamBackend:
     def grab_bgr(self):
         self._ensure()
         if self._mode != "preview":
-            self._switch("preview")
+            self.cam.switch_mode(self.preview_cfg)
+            self._mode = "preview"
         frame = self.cam.capture_array("main")
         try: return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         except: return frame
@@ -126,6 +113,7 @@ class PiCamBackend:
         return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
 
+
 # ============================================================
 # GUI MAIN WINDOW
 # ============================================================
@@ -134,7 +122,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IC X-ray Viewer")
-        self.resize(1280, 720)
+        self.resize(1280,720)
 
         self.leds = LedPanel()
         self.armed = False
@@ -143,8 +131,10 @@ class MainWindow(QMainWindow):
         self.backend = PiCamBackend()
         self.backend.start()
 
-        # UI
+        # GUI Elements
         self.alarm = QLabel("OK", alignment=Qt.AlignCenter)
+        self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
+
         self.view = QLabel("Camera", alignment=Qt.AlignCenter)
 
         # Buttons
@@ -177,10 +167,10 @@ class MainWindow(QMainWindow):
             left.addWidget(b)
 
         left.addStretch()
+
         center = QVBoxLayout()
         center.addWidget(self.alarm)
         center.addWidget(self.view)
-
         root.addLayout(left)
         root.addLayout(center, 1)
         self.setCentralWidget(central)
@@ -188,14 +178,14 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-        # Connect buttons
+        # Button connections
         self.btn_open.clicked.connect(self.on_open)
         self.btn_close.clicked.connect(self.on_close)
         self.btn_align.clicked.connect(self.on_align)
         self.btn_rotate.clicked.connect(self.on_rotate45)
         self.btn_home3.clicked.connect(self.on_home3)
         self.btn_preview.clicked.connect(self.on_preview)
-        self.btn_stop.clicked.connect(self.on_stop)
+        self.btn_stop.clicked.connect(self.on_stop)   # <-- STOP FIXED
         self.btn_export.clicked.connect(self.on_export)
         self.btn_xray.clicked.connect(self.on_xray)
         self.btn_gallery.clicked.connect(self.on_gallery)
@@ -214,22 +204,13 @@ class MainWindow(QMainWindow):
 
         self.all_leds_off()
 
-        # Style for banners
-        self.alarm.setStyleSheet("font-size: 26px; font-weight: bold; padding: 8px;")
 
 
     # ============================================================
-    # UTILITY
+    # SIMPLE BANNER FUNCTION
     # ============================================================
-    def all_leds_off(self):
-        self.leds.write(self.leds.red, False)
-        self.leds.write(self.leds.amber, False)
-        self.leds.write(self.leds.green, False)
-        self.leds.write(self.leds.blue, False)
-
-
     def banner(self, text, color=None):
-        """Simple explicit banner messages only."""
+
         if color == "green":
             style = "background-color:#4CAF50;color:white;font-size:26px;font-weight:bold;padding:8px;"
         elif color == "blue":
@@ -247,6 +228,18 @@ class MainWindow(QMainWindow):
         self.alarm.setText(text)
 
 
+
+    # ============================================================
+    # LED UTILITY
+    # ============================================================
+    def all_leds_off(self):
+        self.leds.write(self.leds.red, False)
+        self.leds.write(self.leds.amber, False)
+        self.leds.write(self.leds.green, False)
+        self.leds.write(self.leds.blue, False)
+
+
+
     # ============================================================
     # TRAY OPEN
     # ============================================================
@@ -258,6 +251,7 @@ class MainWindow(QMainWindow):
         motor1_backward_until_switch1()
 
         self.banner("Tray Opened — Place Sample", color="yellow")
+
 
 
     # ============================================================
@@ -272,6 +266,7 @@ class MainWindow(QMainWindow):
         self.banner("Tray Closed", color="yellow")
 
 
+
     # ============================================================
     # ALIGN SAMPLE
     # ============================================================
@@ -283,10 +278,12 @@ class MainWindow(QMainWindow):
         motor2_move_full_up()
 
         self.armed = True
+
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
 
         self.banner("Alignment Complete — Ready for X-Ray Picture", color="green")
+
 
 
     # ============================================================
@@ -297,6 +294,7 @@ class MainWindow(QMainWindow):
 
     def on_home3(self):
         motor3_home()
+
 
 
     # ============================================================
@@ -310,10 +308,9 @@ class MainWindow(QMainWindow):
             self.banner("XRAY BLOCKED — NOT ARMED", color="orange")
             return
 
-        # Turn off green, turn on blue
+        # TURN ON BLUE LED
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
-
         self.banner("HV On — Taking X-Ray Picture", color="blue")
 
         hv_on()
@@ -321,21 +318,19 @@ class MainWindow(QMainWindow):
         img = self.backend.capture_xray_fixed()
         hv_off()
 
-        # Restore ready state
+        # RESTORE GREEN LED
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
 
-        # Clear banner after exposure finishes
         self.banner("Alignment Complete — Ready for X-Ray Picture", color="green")
 
         # Save image
         fname = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         cv2.imwrite(fname, img)
 
-        # Display on GUI
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h, w = disp.shape[:2]
-        qimg = QImage(disp.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        h,w = disp.shape[:2]
+        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -344,42 +339,9 @@ class MainWindow(QMainWindow):
         self.view.setPixmap(px)
 
 
-    # ============================================================
-    # SHOW LAST
-    # ============================================================
-    def on_show_last(self):
-        if self.preview_on:
-            QMessageBox.warning(self, "Preview Active", "Turn OFF preview first.")
-            return
-
-        import glob
-        base = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
-        files = sorted(glob.glob(base + "/*.jpg") + glob.glob(base + "/*.png"))
-
-        if not files:
-            QMessageBox.warning(self, "No Images", "None found.")
-            return
-
-        img = cv2.imread(files[-1])
-        if img is None:
-            QMessageBox.warning(self, "Error", "Could not load last image.")
-            return
-
-        disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h, w = disp.shape[:2]
-        qimg = QImage(disp.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-        px = QPixmap.fromImage(qimg).scaled(
-            self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.view.setPixmap(px)
-
-        self.banner("Showing Last X-Ray", color="yellow")
-
 
     # ============================================================
-    # PREVIEW
+    # PREVIEW + STOP FIX
     # ============================================================
     def on_preview(self):
         if not self.preview_on:
@@ -389,14 +351,22 @@ class MainWindow(QMainWindow):
             self.preview_on = False
             self.timer.stop()
 
+    def on_stop(self):
+        """STOP button now works."""
+        self.preview_on = False
+        self.timer.stop()
+        self.backend.stop()
+        self.all_leds_off()
+        self.banner("STOPPED", color="red")
+
     def update_frame(self):
         if not self.preview_on:
             return
 
         gray = self.backend.grab_gray()
         disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        h, w = disp.shape[:2]
-        qimg = QImage(disp.data, w, h, 3 * w, QImage.Format.Format_BGR888)
+        h,w = disp.shape[:2]
+        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -405,13 +375,14 @@ class MainWindow(QMainWindow):
         self.view.setPixmap(px)
 
 
+
     # ============================================================
     # EXPORT & GALLERY
     # ============================================================
     def on_export(self):
         try:
             frame = self.backend.grab_bgr()
-            filename, _ = capture_and_save_image(frame, save_dir="captures")
+            filename = capture_and_save_frame(frame, save_dir="captures")
             self.status.showMessage(f"Saved {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Export", str(e))
@@ -427,13 +398,14 @@ class MainWindow(QMainWindow):
         Gallery([str(p) for p in imgs]).run()
 
 
+
     # ============================================================
     # EDITOR
     # ============================================================
     def on_editor(self):
         import glob
         base = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
-        files = sorted(glob.glob(base + "/*.jpg") + glob.glob(base + "/*.png"))
+        files = sorted(glob.glob(base+"/*.jpg")+glob.glob(base+"/*.png"))
 
         if not files:
             QMessageBox.warning(self, "No Images", "None to edit.")
@@ -446,13 +418,15 @@ class MainWindow(QMainWindow):
         self.banner("Editing Image", color="yellow")
 
 
+
     # ============================================================
-    # E-STOP
+    # ESTOP
     # ============================================================
     def check_estop(self):
         if gpio_estop.faulted():
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
+
             self.banner("Fault Detected", color="red")
 
             self.btn_open.setEnabled(False)
@@ -468,6 +442,7 @@ class MainWindow(QMainWindow):
             self.btn_xray.setEnabled(True)
 
 
+
     # ============================================================
     # EXIT CLEANUP
     # ============================================================
@@ -476,13 +451,13 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+
 # ============================================================
 def main():
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()
