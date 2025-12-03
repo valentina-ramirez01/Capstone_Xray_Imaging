@@ -1,55 +1,64 @@
-import serial
-import time
 import RPi.GPIO as GPIO
+import time
 
-# ----- GPIO SETUP -----
+# -------------------------
+# DRV8825 Pins (CNC Shield X Axis)
+# -------------------------
+STEP_PIN = 2
+DIR_PIN  = 5
+EN_PIN   = 8
+
+PULSE_US = 800   # Try 800–1200 if motor is rough
+
+
 GPIO.setmode(GPIO.BCM)
+GPIO.setup(STEP_PIN, GPIO.OUT)
+GPIO.setup(DIR_PIN,  GPIO.OUT)
+GPIO.setup(EN_PIN,   GPIO.OUT)
 
-LIMIT_FWD = 17   # your wiring
-LIMIT_BACK = 25  # your wiring
+# Enable driver (LOW = enabled on most DRV8825 boards)
+GPIO.output(EN_PIN, GPIO.LOW)
 
-GPIO.setup(LIMIT_FWD, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.setup(LIMIT_BACK, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+print("\n=== MOTOR 1 DEBUG ===")
+print("s = forward")
+print("r = backward")
+print("q = quit\n")
 
-# ----- SERIAL TO ARDUINO -----
-arduino = serial.Serial('/dev/ttyACM0', 115200, timeout=0.1)
-time.sleep(2)  # wait for Arduino reset
+def step_once():
+    GPIO.output(STEP_PIN, GPIO.HIGH)
+    time.sleep(PULSE_US / 1_000_000)
+    GPIO.output(STEP_PIN, GPIO.LOW)
+    time.sleep(PULSE_US / 1_000_000)
 
-def send(cmd):
-    arduino.write(cmd.encode())
 
-# ----- MAIN PROGRAM -----
-print("Press S to start forward movement")
-print("Press R to start backward movement")
+try:
+    while True:
+        cmd = input(">> ").strip().lower()
 
-while True:
-    key = input("Enter command (S=forward, R=reverse, Q=quit): ").strip().upper()
+        if cmd == "q":
+            print("Quitting.")
+            break
 
-    if key == "Q":
-        send("S")
-        break
+        elif cmd == "s":
+            print("FORWARD... (press ENTER to stop)")
+            GPIO.output(DIR_PIN, GPIO.HIGH)   # forward
+            while True:
+                step_once()
+                if sys.stdin in select.select([sys.stdin],[],[],0)[0]:
+                    break
 
-    # -------- MOVE FORWARD --------
-    if key == "S":
-        print("Moving forward...")
-        send("F")
-        while True:
-            if GPIO.input(LIMIT_FWD) == 0:   # limit reached
-                print("FORWARD limit reached!")
-                send("S")
-                break
-            time.sleep(0.001)
+        elif cmd == "r":
+            print("BACKWARD... (press ENTER to stop)")
+            GPIO.output(DIR_PIN, GPIO.LOW)   # backward
+            while True:
+                step_once()
+                if sys.stdin in select.select([sys.stdin],[],[],0)[0]:
+                    break
 
-    # -------- MOVE BACKWARD --------
-    if key == "R":
-        print("Moving backward...")
-        send("B")
-        while True:
-            if GPIO.input(LIMIT_BACK) == 0:
-                print("BACKWARD limit reached!")
-                send("S")
-                break
-            time.sleep(0.001)
+        else:
+            print("Unknown command")
 
-send("S")
-GPIO.cleanup()
+finally:
+    GPIO.output(EN_PIN, GPIO.HIGH)  # disable driver
+    GPIO.cleanup()
+    print("GPIO cleaned up.")
