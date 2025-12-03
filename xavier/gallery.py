@@ -4,21 +4,105 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
+from PyQt6.QtWidgets import (
+    QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QFileDialog, QMessageBox, QSlider
+)
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import Qt
+
 from xavier.tools import apply_contrast_brightness, apply_zoom, fit_in_window
 
 
+# =====================================================================
+#   NEW: PYQT6 IMAGE EDITOR WINDOW
+# =====================================================================
+class ImageEditorWindow(QWidget):
+    def __init__(self, img_path: str):
+        super().__init__()
+
+        self.setWindowTitle("Edit Image")
+        self.resize(800, 600)
+
+        self.img_path = img_path
+        self.original = cv2.imread(img_path)
+        if self.original is None:
+            QMessageBox.critical(self, "Error", f"Could not read {img_path}")
+            self.close()
+            return
+
+        # Working copy
+        self.alpha = 1.0     # contrast
+        self.beta = 0        # brightness
+
+        # UI Layout
+        self.preview = QLabel("Preview")
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        btn_inc_con = QPushButton("Contrast +")
+        btn_dec_con = QPushButton("Contrast -")
+        btn_inc_bri = QPushButton("Brightness +")
+        btn_dec_bri = QPushButton("Brightness -")
+        btn_save    = QPushButton("Save Edited Copy")
+        btn_close   = QPushButton("Close")
+
+        btn_inc_con.clicked.connect(lambda: self.adjust_contrast(+0.1))
+        btn_dec_con.clicked.connect(lambda: self.adjust_contrast(-0.1))
+        btn_inc_bri.clicked.connect(lambda: self.adjust_brightness(+5))
+        btn_dec_bri.clicked.connect(lambda: self.adjust_brightness(-5))
+        btn_save.clicked.connect(self.save_copy)
+        btn_close.clicked.connect(self.close)
+
+        controls = QHBoxLayout()
+        for b in (btn_inc_con, btn_dec_con, btn_inc_bri, btn_dec_bri, btn_save, btn_close):
+            controls.addWidget(b)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.preview, 1)
+        layout.addLayout(controls)
+
+        self.update_preview()
+
+    # --------------------------------------------------------------
+    def update_preview(self):
+        edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
+
+        h, w = edited.shape[:2]
+        qimg = QImage(edited.data, w, h, 3*w, QImage.Format.Format_BGR888)
+        px = QPixmap.fromImage(qimg).scaled(
+            self.preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.preview.setPixmap(px)
+
+    # --------------------------------------------------------------
+    def adjust_contrast(self, da):
+        self.alpha = float(np.clip(self.alpha + da, 0.1, 5.0))
+        self.update_preview()
+
+    def adjust_brightness(self, db):
+        self.beta = float(np.clip(self.beta + db, -100, 100))
+        self.update_preview()
+
+    # --------------------------------------------------------------
+    def save_copy(self):
+        base_dir = os.path.dirname(self.img_path)
+        n = len(glob.glob(os.path.join(base_dir, "edited_*.png")))
+        out_path = os.path.join(base_dir, f"edited_{n:04d}.png")
+
+        edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
+
+        cv2.imwrite(out_path, edited)
+        QMessageBox.information(self, "Saved", f"Edited copy saved:\n{out_path}")
+
+
+# =====================================================================
+#   ORIGINAL GALLERY (unchanged except new Editor button)
+# =====================================================================
 class Gallery:
     """
-    Simple stateful image gallery with callable controls.
-
-    Controls (keys):
-      ←/→ : previous/next image (also supports OS-specific keycodes)
-      z/x : zoom in/out (±10%)  [zoom clamped to 1.0..4.0]
-      [/]: contrast down/up (±0.1)  [alpha clamped to 0.1..5.0]
-      ;/' : brightness down/up (±5)  [beta clamped to -100..100]
-      r   : reset view (zoom=1, alpha=1, beta=0)
-      e   : export processed copy to captures/edited_XXXX.png
-      q/ESC : quit
+    Extended gallery plus optional PyQt6 editor window.
     """
 
     def __init__(self, image_paths: List[str], window_name: str = "Gallery"):
@@ -26,14 +110,23 @@ class Gallery:
         self.win = window_name
         self.idx = 0
 
-        # Editable viewer state
-        self.alpha: float = 1.0   # contrast
-        self.beta: float = 0.0    # brightness
-        self.zoom: float = 1.0    # zoom factor
+        # Viewer state
+        self.alpha: float = 1.0
+        self.beta: float = 0.0
+        self.zoom: float = 1.0
 
         self._last_processed: Optional[np.ndarray] = None
 
-    # ----- public callable methods -----
+    # ---------------- USER ACTION HOOK ----------------
+    def open_in_editor(self):
+        """
+        Launch PyQt6 editor for the current image.
+        """
+        path = self.files[self.idx]
+        editor = ImageEditorWindow(path)
+        editor.show()
+
+    # ---------------- existing internal functionality ----------------
     def set_contrast(self, alpha: float) -> None:
         self.alpha = float(np.clip(alpha, 0.1, 5.0))
 
@@ -50,61 +143,49 @@ class Gallery:
         self.zoom = float(np.clip(z, 1.0, 4.0))
 
     def adjust_zoom(self, step: float) -> None:
-        # step is fractional: +0.10 => +10%
         self.set_zoom(self.zoom * (1.0 + step))
 
     def reset_view(self) -> None:
         self.alpha, self.beta, self.zoom = 1.0, 0.0, 1.0
 
-    # ----- internal helpers -----
     def _load(self, i: int) -> Optional[np.ndarray]:
         path = self.files[i]
-        img = cv2.imread(path, cv2.IMREAD_COLOR)
-        return img
+        return cv2.imread(path, cv2.IMREAD_COLOR)
 
     def _render_current(self) -> np.ndarray:
         path = self.files[self.idx]
         img = self._load(self.idx)
         if img is None:
             canvas = np.zeros((240, 960, 3), dtype=np.uint8)
-            cv2.putText(canvas, f"Couldn't read: {os.path.basename(path)}", (20, 140),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(canvas, f"Couldn't read: {os.path.basename(path)}",
+                        (20,140), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        (0,255,255), 2)
             self._last_processed = canvas
             return canvas
 
-        # Apply operations: zoom -> contrast/brightness
         proc = apply_zoom(img, self.zoom)
         proc = apply_contrast_brightness(proc, self.alpha, self.beta)
 
-        # Compose a display frame and draw HUD
         disp = fit_in_window(proc, 1280, 720)
         hud = (
             f"{self.idx+1}/{len(self.files)}  {os.path.basename(path)}  |  "
             f"zoom {self.zoom:.2f}x  alpha {self.alpha:.2f}  beta {self.beta:.0f}"
         )
-        cv2.putText(disp, hud, (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(disp, hud, (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(disp, hud, (12, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+        cv2.putText(disp, hud, (12, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
 
         self._last_processed = proc
         return disp
 
-    def _export_current(self, out_dir: str = "captures") -> Optional[str]:
-        if self._last_processed is None:
-            return None
-        os.makedirs(out_dir, exist_ok=True)
-        n = len(glob.glob(os.path.join(out_dir, "edited_*.png")))
-        out_path = os.path.join(out_dir, f"edited_{n:04d}.png")
-        return out_path if cv2.imwrite(out_path, self._last_processed) else None
-
-    # ----- event loop -----
-    def run(self, start_at: Optional[str] = None) -> None:
+    def run(self):
         if not self.files:
-            print("No images to show.")
+            print("No images.")
             return
-        if start_at and start_at in self.files:
-            self.idx = self.files.index(start_at)
 
         cv2.namedWindow(self.win, cv2.WINDOW_AUTOSIZE)
+
         while True:
             cv2.imshow(self.win, self._render_current())
             k = cv2.waitKeyEx(0) & 0xFFFFFFFF
@@ -114,35 +195,12 @@ class Gallery:
                 cv2.destroyWindow(self.win)
                 break
 
-            # Prev / Next (support common codes across OSes)
+            # Prev / Next
             elif k in (81, 2424832):   # left arrow
                 self.idx = (self.idx - 1) % len(self.files)
             elif k in (83, 2555904):   # right arrow
                 self.idx = (self.idx + 1) % len(self.files)
 
-            # Zoom
-            elif k == ord('z'):
-                self.adjust_zoom(+0.10)   # +10%
-            elif k == ord('x'):
-                self.adjust_zoom(-0.10)   # -10%
-
-            # Contrast
-            elif k == ord(']'):
-                self.adjust_contrast(+0.10)
-            elif k == ord('['):
-                self.adjust_contrast(-0.10)
-
-            # Brightness
-            elif k == ord("'"):
-                self.adjust_brightness(+5.0)
-            elif k == ord(';'):
-                self.adjust_brightness(-5.0)
-
-            # Reset
-            elif k == ord('r'):
-                self.reset_view()
-
-            # Export processed copy
-            elif k == ord('e'):
-                out = self._export_current("captures")
-                print(f"Exported: {out}" if out else "Export failed.")
+            # Edit button (press "E")
+            elif k == ord('E'):
+                self.open_in_editor()

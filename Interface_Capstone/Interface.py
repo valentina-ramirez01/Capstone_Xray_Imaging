@@ -20,7 +20,6 @@ import serial
 import RPi.GPIO as GPIO
 from datetime import datetime
 
-
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -31,7 +30,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 
 from xavier.io_utils import capture_and_save_frame
-from xavier.gallery import Gallery
+from xavier.gallery import Gallery, ImageEditorWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier import gpio_estop
@@ -57,6 +56,7 @@ ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 # PiCamera2 backend
 # ---------------------------------------------------------------
 from xavier.camera_picam2 import Picamera2
+
 
 class PiCamBackend:
     def __init__(self, preview_size=(1280,720), still_size=(1920,1080)):
@@ -154,12 +154,11 @@ class PiCamBackend:
         self.cam.configure(config)
         self.cam.start()
 
-        time.sleep(0.3)           # settle
-        time.sleep(3.0 + 0.4)     # exposure + readout
+        time.sleep(0.3)
+        time.sleep(3.0 + 0.4)
 
         frame = self.cam.capture_array("main")
 
-        # return to preview mode
         self.cam.stop()
         self.cam.configure(self.preview_cfg)
         self.cam.start()
@@ -179,16 +178,14 @@ class MainWindow(QMainWindow):
 
         # LED controller
         self.leds = LedPanel()
-        self.green_state = False   # Green ON only when Motor2 finishes alignment
+        self.green_state = False
 
         # Camera backend
         self.backend = PiCamBackend()
         self.backend.start()
         self.preview_on = False
 
-        # --------------------
         # Widgets
-        # --------------------
         self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
         self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -208,9 +205,7 @@ class MainWindow(QMainWindow):
         self.btn_editor  = QPushButton("Editor")
         self.btn_show_last = QPushButton("Show Last X-ray")
 
-        # --------------------
         # Layout
-        # --------------------
         central = QWidget()
         root = QHBoxLayout(central)
 
@@ -237,9 +232,7 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-        # --------------------
         # Connections
-        # --------------------
         self.btn_open.clicked.connect(self.on_open)
         self.btn_close.clicked.connect(self.on_close)
         self.btn_align.clicked.connect(self.on_align)
@@ -253,6 +246,9 @@ class MainWindow(QMainWindow):
         self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_show_last.clicked.connect(self.on_show_last)
 
+        # ⭐ NEW — Connect Editor button
+        self.btn_editor.clicked.connect(self.on_editor)
+
         # Image refresh timer
         self.timer = QTimer(self)
         self.timer.setInterval(33)
@@ -264,7 +260,6 @@ class MainWindow(QMainWindow):
         self.estop_timer.timeout.connect(self.check_estop)
         self.estop_timer.start()
 
-        # Initial LED state
         self.update_leds()
 
     # ============================================================
@@ -288,14 +283,10 @@ class MainWindow(QMainWindow):
     def on_align(self):
         self.alarm.setText("ALIGNING SAMPLE…")
         self.update_leds(amber=True)
-
         motor2_home_to_limit3()
         motor2_move_full_up()
-
-        # After alignment completes
         self.green_state = True
         self.update_leds(green=True)
-
         self.alarm.setText("ALIGN COMPLETE — READY")
 
     def on_rotate45(self):
@@ -312,12 +303,9 @@ class MainWindow(QMainWindow):
     # LED MANAGEMENT
     # ============================================================
     def update_leds(self, *, amber=False, green=False, blue=False):
-        # AMBER behaviour unchanged
         self.leds.write(self.leds.amber, amber)
 
-        # BLUE vs GREEN behaviour unchanged:
         if blue:
-            # blue ON → green OFF
             self.leds.write(self.leds.green, False)
             self.leds.write(self.leds.blue, True)
         else:
@@ -331,21 +319,20 @@ class MainWindow(QMainWindow):
         self.alarm.setText("XRAY — HV ON")
         self.update_leds(blue=True)
 
-        hv_on()                   # TURN HV ON
-        time.sleep(0.5)           # Pre-exposure warmup
+        hv_on()
+        time.sleep(0.5)
         img = self.backend.capture_xray_fixed()
-        time.sleep(0.5)           # Read out time
+        time.sleep(0.5)
         hv_off()
 
-        # File save
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
         cv2.imwrite(filename, img)
         self.alarm.setText(f"XRAY COMPLETE — SAVED: {filename}")
-        
-        # Show the image on the GUI screen
-        disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # QImage expects RGB
+
+        disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = disp.shape[:2]
+
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
@@ -358,20 +345,16 @@ class MainWindow(QMainWindow):
         self.alarm.setText("XRAY COMPLETE")
 
     # ============================================================
-    # SHOW LAST PHOTO TAKEN
+    # SHOW LAST PHOTO
     # ============================================================
     def on_show_last(self):
-        # No preview running — otherwise, it will overwrite constantly
         if self.preview_on:
             QMessageBox.warning(self, "Preview Active",
                 "Turn OFF preview before showing last image.")
             return
 
-        # Path to captures folder
         import glob
         path = "/home/xray_juanito/Capstone_Xray_Imaging/captures/*.jpg"
-
-        # Find latest file
         files = sorted(glob.glob(path))
         if not files:
             QMessageBox.warning(self, "No Images", "No X-ray images found.")
@@ -383,7 +366,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Could not load last X-ray image.")
             return
 
-        # Convert for display
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = disp.shape[:2]
 
@@ -399,12 +381,12 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     # CAMERA / PREVIEW
-    # ============================================================  
+    # ============================================================
     def on_preview(self):
         if not self.preview_on:
             self.preview_on = True
             self.timer.start()
-            self.alarm.setText("Preview ON")     
+            self.alarm.setText("Preview ON")
         else:
             self.preview_on = False
             self.timer.stop()
@@ -432,7 +414,7 @@ class MainWindow(QMainWindow):
         self.view.setPixmap(px)
 
     # ============================================================
-    # EXPORT / GALLERY
+    # EXPORT & GALLERY
     # ============================================================
     def on_export(self):
         try:
@@ -443,10 +425,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self,"Export",str(e))
 
     def on_gallery(self):
-        """
-        Open OpenCV-based gallery using images in the SAME captures folder
-        used by XRAY save, supporting .jpg, .png, and edited_*.png.
-        """
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
         jpgs    = list(base_dir.glob("capture_*.jpg"))
         pngs    = list(base_dir.glob("capture_*.png"))
@@ -460,7 +438,31 @@ class MainWindow(QMainWindow):
         Gallery([str(p) for p in paths]).run()
 
     # ============================================================
-    # E-STOP HANDLING
+    # ⭐ NEW IMAGE EDITOR BUTTON IMPLEMENTATION
+    # ============================================================
+    def on_editor(self):
+        if self.preview_on:
+            QMessageBox.warning(self, "Preview Active",
+                "Turn OFF preview before editing an image.")
+            return
+
+        import glob
+        base_dir = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
+        files = sorted(glob.glob(base_dir + "/*.jpg") + glob.glob(base_dir + "/*.png"))
+
+        if not files:
+            QMessageBox.warning(self, "No Images", "No images found to edit.")
+            return
+
+        last_file = files[-1]
+
+        self.editor_window = ImageEditorWindow(last_file)
+        self.editor_window.show()
+
+        self.alarm.setText(f"Editing: {last_file}")
+
+    # ============================================================
+    # E-STOP
     # ============================================================
     def check_estop(self):
         if gpio_estop.faulted():
@@ -477,6 +479,7 @@ class MainWindow(QMainWindow):
             self.btn_align.setEnabled(True)
             self.btn_rotate.setEnabled(True)
             self.btn_xray.setEnabled(True)
+
 
 # ============================================================
 def main():
