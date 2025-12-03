@@ -146,6 +146,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # ---------------- DEBUG INSERTION ----------------
+        print("[EDEBUG] GPIO26 mode at startup:", GPIO.gpio_function(26))
+        # -------------------------------------------------
+
         self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280,720)
 
@@ -231,10 +235,11 @@ class MainWindow(QMainWindow):
 
         self.all_leds_off()
 
-        # ------------------------------------------------------------
-        # START E-STOP MONITOR THREAD
-        # ------------------------------------------------------------
+        # ---------------- DEBUG INSERTION ----------------
+        print("[EDEBUG] Starting E-STOP monitor…")
         gpio_estop.start_monitor(self.on_estop_fault_gui)
+        print("[EDEBUG] E-STOP monitor started.")
+        # -------------------------------------------------
 
 
 
@@ -242,6 +247,7 @@ class MainWindow(QMainWindow):
     # LED UTILITIES
     # ============================================================
     def all_leds_off(self):
+        print("[EDEBUG] all_leds_off() called")
         self.leds.write(self.leds.red, False)
         self.leds.write(self.leds.amber, False)
         self.leds.write(self.leds.green, False)
@@ -252,6 +258,7 @@ class MainWindow(QMainWindow):
     # SIMPLE BANNER
     # ============================================================
     def banner(self, text, color=None):
+        print(f"[EDEBUG] banner() text='{text}', color={color}")
 
         if color == "green":
             st = "background-color:#4CAF50;color:white;font-size:26px;font-weight:bold;padding:8px;"
@@ -275,29 +282,36 @@ class MainWindow(QMainWindow):
     # EMERGENCY STOP CALLBACK
     # ============================================================
     def on_estop_fault_gui(self):
-        print("[GUI] E-STOP TRIGGERED — FULL SHUTDOWN")
+        print("\n>>> [EDEBUG] E-STOP CALLBACK CALLED <<<")
 
         # Kill HV
-        try: hv_off()
-        except: pass
+        try:
+            hv_off()
+            print("[EDEBUG] HV OFF OK")
+        except Exception as e:
+            print("[EDEBUG] HV OFF ERROR:", e)
 
         # Stop camera & timers
         try:
             self.preview_on = False
             self.timer.stop()
             self.backend.stop()
-        except:
-            pass
+            print("[EDEBUG] Camera preview stopped")
+        except Exception as e:
+            print("[EDEBUG] Camera stop ERROR:", e)
 
         # LEDs: red
+        print("[EDEBUG] Setting RED LED")
         self.all_leds_off()
         self.leds.write(self.leds.red, True)
 
         # GUI banner
+        print("[EDEBUG] Updating banner…")
         self.banner("EMERGENCY STOP — SYSTEM SHUTDOWN", color="red")
         QApplication.processEvents()
 
         # Disable all buttons
+        print("[EDEBUG] Disabling buttons…")
         for b in (
             self.btn_open, self.btn_close, self.btn_align,
             self.btn_rotate, self.btn_home3, self.btn_xray,
@@ -306,7 +320,7 @@ class MainWindow(QMainWindow):
         ):
             b.setEnabled(False)
 
-        print("[GUI] Controls disabled for safety.")
+        print(">>> [EDEBUG] CALLBACK END <<<\n")
 
 
 
@@ -315,18 +329,22 @@ class MainWindow(QMainWindow):
     # E-STOP POLLING FOR GUI STATE
     # ============================================================
     def check_estop(self):
-        if gpio_estop.faulted():
+        latch = gpio_estop.faulted()
+        print(f"[EDEBUG] check_estop(): latch={latch}")
+
+        if latch:
+            print("[EDEBUG] GUI sees FAULT → RED LED + banner")
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
             self.banner("FAULT — E-STOP PRESSED", color="red")
-
             return
 
 
 
     # ============================================================
-    # TRAY OPEN
+    # (ALL OTHER FUNCTIONS UNMODIFIED BELOW HERE)
     # ============================================================
+
     def on_open(self):
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
@@ -337,10 +355,6 @@ class MainWindow(QMainWindow):
         self.banner("Tray Opened — Place Sample", color="yellow")
 
 
-
-    # ============================================================
-    # TRAY CLOSE
-    # ============================================================
     def on_close(self):
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
@@ -350,10 +364,6 @@ class MainWindow(QMainWindow):
         self.banner("Tray Closed", color="yellow")
 
 
-
-    # ============================================================
-    # ALIGN SAMPLE
-    # ============================================================
     def on_align(self):
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
@@ -368,10 +378,6 @@ class MainWindow(QMainWindow):
         self.banner("Alignment Complete — Ready for X-Ray Picture", color="green")
 
 
-
-    # ============================================================
-    # ROTATION
-    # ============================================================
     def on_rotate45(self):
         motor3_rotate_45()
 
@@ -379,10 +385,6 @@ class MainWindow(QMainWindow):
         motor3_home()
 
 
-
-    # ============================================================
-    # XRAY
-    # ============================================================
     def on_xray(self):
 
         if not self.armed:
@@ -410,11 +412,9 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.green, True)
         self.banner("Alignment Complete — Ready for X-Ray Picture", color="green")
 
-        # Save image
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         cv2.imwrite(filename, img)
 
-        # Display image
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h,w = disp.shape[:2]
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
@@ -426,10 +426,6 @@ class MainWindow(QMainWindow):
         self.view.setPixmap(px)
 
 
-
-    # ============================================================
-    # SHOW LAST
-    # ============================================================
     def on_show_last(self):
         if self.preview_on:
             QMessageBox.warning(self,"Preview Active","Turn OFF preview first.")
@@ -461,10 +457,6 @@ class MainWindow(QMainWindow):
         self.banner("Showing Last X-Ray", color="yellow")
 
 
-
-    # ============================================================
-    # PREVIEW + STOP
-    # ============================================================
     def on_preview(self):
         if not self.preview_on:
             self.preview_on=True
@@ -473,12 +465,14 @@ class MainWindow(QMainWindow):
             self.preview_on=False
             self.timer.stop()
 
+
     def on_stop(self):
         self.preview_on=False
         self.timer.stop()
         self.backend.stop()
         self.all_leds_off()
         self.banner("STOPPED", color="red")
+
 
     def update_frame(self):
         if not self.preview_on:
@@ -496,10 +490,6 @@ class MainWindow(QMainWindow):
         self.view.setPixmap(px)
 
 
-
-    # ============================================================
-    # EXPORT & GALLERY & EDITOR
-    # ============================================================
     def on_export(self):
         try:
             frame = self.backend.grab_bgr()
@@ -507,6 +497,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage(f"Saved {filename}")
         except Exception as e:
             QMessageBox.critical(self,"Export",str(e))
+
 
     def on_gallery(self):
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
@@ -517,6 +508,7 @@ class MainWindow(QMainWindow):
             return
 
         Gallery([str(p) for p in all_imgs]).run()
+
 
     def on_editor(self):
         import glob
@@ -534,10 +526,6 @@ class MainWindow(QMainWindow):
         self.banner("Editing Image", color="yellow")
 
 
-
-    # ============================================================
-    # EXIT CLEANUP
-    # ============================================================
     def closeEvent(self,event):
 
         try: hv_off()
