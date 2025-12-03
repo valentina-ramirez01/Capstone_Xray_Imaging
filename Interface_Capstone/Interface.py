@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 
-from xavier.io_utils import capture_and_save_frame
+from xavier.io_utils import capture_and_save_image
 from xavier.gallery import Gallery, ImageEditorWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
@@ -148,7 +148,7 @@ class PiCamBackend:
 
 
 # ============================================================
-# MAIN INTERFACE
+# MAIN GUI WINDOW
 # ============================================================
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -160,7 +160,6 @@ class MainWindow(QMainWindow):
         # LED + Safety Logic
         self.leds = LedPanel()
         self.armed = False   # Green LED = Armed
-        
 
         # Camera backend
         self.backend = PiCamBackend()
@@ -242,81 +241,81 @@ class MainWindow(QMainWindow):
         self.update_leds()
 
     # ============================================================
-    # MOTOR CONTROLS
+    # BANNER HELPER
     # ============================================================
-    def on_open(self):
-        self.alarm.setText("RETURNING ROTATION TO HOME…")
-        motor3_home()
-
-        self.alarm.setText("OPENING…")
-
-        # DISARM SYSTEM on OPEN
-        self.armed = False
-        self.update_leds(amber=True)
-
-        motor1_backward_until_switch1()
-
-        self.alarm.setText("OPEN COMPLETE")
-
-    def on_close(self):
-        self.alarm.setText("CLOSING…")
-
-        # DISARM SYSTEM on CLOSE
-        self.armed = False
-        self.update_leds(amber=True)
-
-        motor1_forward_until_switch2()
-        self.update_leds()
-
-        self.alarm.setText("CLOSE COMPLETE")
-
-    def on_align(self):
-        self.alarm.setText("ALIGNING SAMPLE…")
-        self.update_leds(amber=True)
-
-        motor2_home_to_limit3()
-        motor2_move_full_up()
-
-        # ARM SYSTEM
-        self.armed = True
-        self.update_leds(green=True)
-
-        self.alarm.setText("ALIGN COMPLETE — SYSTEM ARMED (GREEN)")
-
-    def on_rotate45(self):
-        self.alarm.setText("ROTATING 45°…")
-        motor3_rotate_45()
-        self.alarm.setText("ROTATION COMPLETE")
-
-    def on_home3(self):
-        self.alarm.setText("RETURNING TO HOME…")
-        motor3_home()
-        self.alarm.setText("HOME COMPLETE")
+    def set_banner(self, message: str):
+        self.alarm.setText(message)
 
     # ============================================================
-    # LED CONTROL
+    # LED CONTROL (WITH BANNERS)
     # ============================================================
     def update_leds(self, *, amber=False, green=False, blue=False):
         self.leds.write(self.leds.amber, amber)
         self.leds.write(self.leds.green, green)
         self.leds.write(self.leds.blue, blue)
 
+        # Banner logic based on LED state
+        if blue:
+            self.set_banner("HV On — Taking Picture")
+        elif green:
+            self.set_banner("Ready for X-Ray Picture")
+        elif amber:
+            self.set_banner("Tray Moving...")
+
+    # ============================================================
+    # MOTOR CONTROLS WITH BANNERS
+    # ============================================================
+    def on_open(self):
+        self.set_banner("Tray Opening")
+        self.armed = False
+        self.update_leds(amber=True)
+
+        motor3_home()
+        motor1_backward_until_switch1()
+
+        self.set_banner("Tray Opened — Place Sample")
+
+    def on_close(self):
+        self.set_banner("Tray Closing")
+        self.armed = False
+        self.update_leds(amber=True)
+
+        motor1_forward_until_switch2()
+
+        self.set_banner("Tray Closed")
+        self.update_leds()
+
+    def on_align(self):
+        self.set_banner("Aligning Sample")
+        self.update_leds(amber=True)
+
+        motor2_home_to_limit3()
+        motor2_move_full_up()
+
+        self.armed = True
+        self.update_leds(green=True)
+
+    def on_rotate45(self):
+        self.set_banner("Rotating 45°…")
+        motor3_rotate_45()
+        self.set_banner("Rotation Complete")
+
+    def on_home3(self):
+        self.set_banner("Returning to Home…")
+        motor3_home()
+        self.set_banner("Home Complete")
+
     # ============================================================
     # XRAY (LEDS + HV + ARMING)
     # ============================================================
     def on_xray(self):
-        # SAFETY CHECK — DON'T CHANGE LED STATE
         if not self.armed:
             QMessageBox.warning(self, "Not Armed",
                 "System is NOT armed.\nAlign sample first (Green ON).")
-            self.alarm.setText("XRAY BLOCKED — NOT ARMED")
+            self.set_banner("XRAY BLOCKED — NOT ARMED")
             return
 
-        # XRAY ALLOWED
-        self.alarm.setText("XRAY — HV ON")
-
-        # During HV: Green OFF, Blue ON
-        self.update_leds(green=False, blue=True)
+        self.update_leds(blue=True)
         self.armed = False
 
         hv_on()
@@ -327,16 +326,15 @@ class MainWindow(QMainWindow):
         time.sleep(0.5)
         hv_off()
 
-        # After HV: Blue OFF, Green ON — AUTO RE-ARM
-        self.update_leds(blue=False, green=True)
         self.armed = True
+        self.update_leds(green=True)
 
         # Save XRAY image
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
         cv2.imwrite(filename, img)
 
-        # Show image in GUI
+        # Display
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = disp.shape[:2]
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
@@ -347,10 +345,8 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
-        self.alarm.setText("XRAY COMPLETE — SYSTEM ARMED")
-
     # ============================================================
-    # SHOW LAST X-RAY
+    # SHOW LAST IMAGE
     # ============================================================
     def on_show_last(self):
         if self.preview_on:
@@ -366,12 +362,10 @@ class MainWindow(QMainWindow):
                        glob.glob(base_dir + "/*.png"))
 
         if not files:
-            QMessageBox.warning(self, "No Images", "No X-ray images found.")
+            QMessageBox.warning(self, "No Images", "No images found.")
             return
 
-        last_file = files[-1]
-        img = cv2.imread(last_file)
-
+        img = cv2.imread(files[-1])
         if img is None:
             QMessageBox.warning(self, "Error", "Could not load last image.")
             return
@@ -385,9 +379,9 @@ class MainWindow(QMainWindow):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
-
         self.view.setPixmap(px)
-        self.alarm.setText(f"Showing Last: {last_file}")
+
+        self.set_banner("Showing Last X-Ray")
 
     # ============================================================
     # PREVIEW
@@ -396,20 +390,21 @@ class MainWindow(QMainWindow):
         if not self.preview_on:
             self.preview_on = True
             self.timer.start()
-            self.alarm.setText("Preview ON")
+            self.set_banner("Preview ON")
         else:
             self.preview_on = False
             self.timer.stop()
-            self.alarm.setText("Preview OFF")
+            self.set_banner("Preview OFF")
 
     def on_stop(self):
         self.preview_on = False
         self.timer.stop()
         self.backend.stop()
-        self.alarm.setText("STOPPED")
+        self.set_banner("STOPPED")
 
     def update_frame(self):
-        if not self.preview_on: return
+        if not self.preview_on:
+            return
 
         gray = self.backend.grab_gray()
         disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -431,8 +426,8 @@ class MainWindow(QMainWindow):
     def on_export(self):
         try:
             frame = self.backend.grab_bgr()
-            path,_ = capture_and_save_frame(frame, save_dir="captures")
-            self.status.showMessage(f"Saved {path}")
+            filename,_ = capture_and_save_image(frame, save_dir="captures")
+            self.status.showMessage(f"Saved {filename}")
         except Exception as e:
             QMessageBox.critical(self,"Export",str(e))
 
@@ -446,7 +441,7 @@ class MainWindow(QMainWindow):
         all_imgs = sorted(all_imgs)
 
         if not all_imgs:
-            QMessageBox.information(self, "Gallery", "No images found in captures folder.")
+            QMessageBox.information(self, "Gallery", "No images found.")
             return
 
         Gallery([str(p) for p in all_imgs]).run()
@@ -467,7 +462,7 @@ class MainWindow(QMainWindow):
                        glob.glob(base_dir + "/*.png"))
 
         if not files:
-            QMessageBox.warning(self, "No Images", "No images found to edit.")
+            QMessageBox.warning(self, "No Images", "No images found.")
             return
 
         last_file = files[-1]
@@ -475,15 +470,15 @@ class MainWindow(QMainWindow):
         self.editor_window = ImageEditorWindow(last_file)
         self.editor_window.show()
 
-        self.alarm.setText(f"Editing: {last_file}")
+        self.set_banner(f"Editing Image")
 
     # ============================================================
     # E-STOP
     # ============================================================
     def check_estop(self):
         if gpio_estop.faulted():
-            self.alarm.setText("E-STOP TRIGGERED")
-            self.update_leds()
+            self.update_leds()  # turn off LEDs
+            self.set_banner("Fault Detected")
             self.btn_open.setEnabled(False)
             self.btn_close.setEnabled(False)
             self.btn_align.setEnabled(False)
@@ -495,19 +490,20 @@ class MainWindow(QMainWindow):
             self.btn_align.setEnabled(True)
             self.btn_rotate.setEnabled(True)
             self.btn_xray.setEnabled(True)
-def closeEvent(self, event):
-    """
-    When GUI is closed, turn off ALL LEDs for safety.
-    """
-    try:
-        self.leds.write(self.leds.red, False)
-        self.leds.write(self.leds.amber, False)
-        self.leds.write(self.leds.green, False)
-        self.leds.write(self.leds.blue, False)
-    except Exception as e:
-        print("LED shutdown error:", e)
 
-    super().closeEvent(event)
+    # ============================================================
+    # SHUTDOWN — TURN OFF ALL LEDS
+    # ============================================================
+    def closeEvent(self, event):
+        try:
+            self.leds.write(self.leds.red, False)
+            self.leds.write(self.leds.amber, False)
+            self.leds.write(self.leds.green, False)
+            self.leds.write(self.leds.blue, False)
+        except:
+            pass
+
+        super().closeEvent(event)
 
 
 # ============================================================
