@@ -1,19 +1,22 @@
-import sys, time
+import sys
+import time
 from pathlib import Path
 
-# ----------------------------------------------------------
-# Ensure project root is in PYTHONPATH
-# ----------------------------------------------------------
+# ---------------------------------------------------------------
+# Ensure project root
+# ---------------------------------------------------------------
 _here = Path(__file__).resolve()
 project_root = _here.parent.parent
+
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# ----------------------------------------------------------
-# Normal imports
-# ----------------------------------------------------------
+# ---------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------
 import numpy as np
 import cv2
+import serial
 import RPi.GPIO as GPIO
 
 from PyQt6.QtWidgets import (
@@ -23,17 +26,17 @@ from PyQt6.QtWidgets import (
     QMessageBox, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QImage, QPixmap
 
-# Project modules
 from xavier.io_utils import capture_and_save_frame
 from xavier.gallery import Gallery
+from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier import gpio_estop
-from xavier.relay import hv_on, hv_off
-from xavier.camera_picam2 import Picamera2
 
-# ⭐ Correct stepper functions
+# ---------------------------------------------------------------
+# Stepper Motor imports (FINAL WORKING FUNCTIONS)
+# ---------------------------------------------------------------
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
     motor1_backward_until_switch1,
@@ -42,29 +45,31 @@ from xavier.stepper_Motor import (
     motor3_rotate_45
 )
 
+# ---------------------------------------------------------------
+# Serial link for Motor 1 (Arduino)
+# ---------------------------------------------------------------
+ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 
-# ============================================================
-# CAMERA BACKEND
-# ============================================================
+# ---------------------------------------------------------------
+# PiCamera2 backend
+# ---------------------------------------------------------------
+from xavier.camera_picam2 import Picamera2
+
 class PiCamBackend:
     def __init__(self, preview_size=(1280,720), still_size=(1920,1080)):
         self.preview_size = preview_size
-        self.still_size = still_size
-        self.cam = None
+        self.still_size   = still_size
+        self.cam: Picamera2 | None = None
         self._mode = "stopped"
 
     def start(self):
         self.cam = Picamera2()
-        self.preview_cfg = self.cam.create_preview_configuration(
-            main={"size": self.preview_size}
-        )
-        self.still_cfg = self.cam.create_still_configuration(
-            main={"size": self.still_size}
-        )
+        self.preview_cfg = self.cam.create_preview_configuration(main={"size": self.preview_size})
+        self.still_cfg   = self.cam.create_still_configuration(main={"size": self.still_size})
         self.cam.configure(self.preview_cfg)
         self.cam.start()
-        time.sleep(0.1)
         self._mode = "preview"
+        time.sleep(0.1)
 
     def stop(self):
         if self.cam:
@@ -74,30 +79,61 @@ class PiCamBackend:
             except: pass
         self.cam = None
         self._mode = "stopped"
+        time.sleep(0.2)
 
     def _ensure(self):
         if self.cam is None:
-            raise RuntimeError("Camera not started")
+            raise RuntimeError("Picamera2 not started")
+
+    def _switch(self, mode):
+        self._ensure()
+        if mode == self._mode:
+            return
+        cfg = self.preview_cfg if mode == "preview" else self.still_cfg
+        try:
+            self.cam.switch_mode(cfg)
+        except:
+            try: self.cam.stop()
+            except: pass
+            self.cam.configure(cfg)
+            self.cam.start()
+        self._mode = mode
+        time.sleep(0.05)
+
+    def grab_gray(self):
+        self._ensure()
+        if self._mode != "preview":
+            self._switch("preview")
+        frame = self.cam.capture_array("main")
+        try:
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        except:
+            return frame
 
     def grab_bgr(self):
         self._ensure()
+        if self._mode != "preview":
+            self._switch("preview")
         frame = self.cam.capture_array("main")
-        if frame.ndim == 2:
-            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        try:
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        except:
+            return frame
 
     def capture_still_bgr(self):
         self._ensure()
-        self.cam.switch_mode(self.still_cfg)
+        self._switch("still")
         img = self.cam.capture_array("main")
-        try:    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        except: pass
-        self.cam.switch_mode(self.preview_cfg)
+        try:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        except:
+            pass
+        self._switch("preview")
         return img
 
 
 # ============================================================
-# MAIN WINDOW
+# MAIN GUI WINDOW
 # ============================================================
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -106,129 +142,156 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280,720)
 
+        # LED controller
         self.leds = LedPanel()
+        self.green_state = False   # Green ON only when Motor2 finishes alignment
+
+        # Camera backend
         self.backend = PiCamBackend()
         self.backend.start()
         self.preview_on = False
 
-        # -----------------------------
-        # GUI ELEMENTS
-        # -----------------------------
+        # --------------------
+        # Widgets
+        # --------------------
         self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
-        self.view  = QLabel("Camera View", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
+        # Motor buttons
+        self.btn_open   = QPushButton("OPEN")
+        self.btn_close  = QPushButton("CLOSE")
+        self.btn_align  = QPushButton("ALIGN SAMPLE")
+        self.btn_rotate = QPushButton("Rotate 45°")
+
+        # Camera/HV buttons
         self.btn_preview = QPushButton("Preview")
         self.btn_stop    = QPushButton("STOP")
         self.btn_export  = QPushButton("Export Last")
-        self.btn_gallery = QPushButton("Gallery")
         self.btn_xray    = QPushButton("XRAY Photo")
+        self.btn_gallery = QPushButton("Gallery")
+        self.btn_editor  = QPushButton("Editor")
 
-        # ⭐ Motor Buttons (all enabled)
-        self.btn_open  = QPushButton("OPEN (Motor1)")
-        self.btn_close = QPushButton("CLOSE (Motor1)")
-        self.btn_align = QPushButton("ALIGN SAMPLE (Motor2)")
-        self.btn_rotate = QPushButton("Rotate 45° (Motor3)")
-
+        # --------------------
         # Layout
+        # --------------------
         central = QWidget()
         root = QHBoxLayout(central)
 
         left = QVBoxLayout()
         for b in (
             self.btn_preview, self.btn_stop,
-            self.btn_export, self.btn_gallery,
-            self.btn_xray,
+            self.btn_export, self.btn_xray,
             self.btn_open, self.btn_close,
-            self.btn_align,
-            self.btn_rotate
+            self.btn_align, self.btn_rotate,
+            self.btn_gallery, self.btn_editor
         ):
             left.addWidget(b)
         left.addStretch()
 
         center = QVBoxLayout()
         center.addWidget(self.alarm)
-        center.addWidget(self.view,1)
+        center.addWidget(self.view, 1)
 
         root.addLayout(left)
-        root.addLayout(center,1)
+        root.addLayout(center, 1)
         self.setCentralWidget(central)
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-        # -----------------------------
-        # SIGNALS
-        # -----------------------------
+        # --------------------
+        # Connections
+        # --------------------
+        self.btn_open.clicked.connect(self.on_open)
+        self.btn_close.clicked.connect(self.on_close)
+        self.btn_align.clicked.connect(self.on_align)
+        self.btn_rotate.clicked.connect(self.on_rotate45)
+
         self.btn_preview.clicked.connect(self.on_preview)
         self.btn_stop.clicked.connect(self.on_stop)
         self.btn_export.clicked.connect(self.on_export)
-        self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_xray.clicked.connect(self.on_xray)
+        self.btn_gallery.clicked.connect(self.on_gallery)
 
-        self.btn_open.clicked.connect(self.on_open_motor)
-        self.btn_close.clicked.connect(self.on_close_motor)
-        self.btn_align.clicked.connect(self.on_align_sample)
-        self.btn_rotate.clicked.connect(self.on_rotate45)
-
-        # Timers
+        # Image refresh timer
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
 
+        # E-stop checker
         self.estop_timer = QTimer(self)
-        self.estop_timer.setInterval(100)
+        self.estop_timer.setInterval(200)
         self.estop_timer.timeout.connect(self.check_estop)
         self.estop_timer.start()
 
+        # Initial LED state
         self.update_leds()
 
     # ============================================================
     # MOTOR BUTTONS
     # ============================================================
-    def on_open_motor(self):
-        self.alarm.setText("Opening...")
+    def on_open(self):
+        self.alarm.setText("OPENING…")
+        self.update_leds(amber=True)
         motor1_backward_until_switch1()
-        self.alarm.setText("OPEN reached")
+        self.update_leds()   # amber off (but green stays based on state)
+        self.alarm.setText("OPEN COMPLETE")
 
-    def on_close_motor(self):
-        self.alarm.setText("Closing...")
+    def on_close(self):
+        self.alarm.setText("CLOSING…")
+        self.update_leds(amber=True)
         motor1_forward_until_switch2()
-        self.alarm.setText("CLOSED")
+        self.update_leds()
+        self.alarm.setText("CLOSE COMPLETE")
 
-    def on_align_sample(self):
-        self.alarm.setText("Aligning sample…")
+    def on_align(self):
+        self.alarm.setText("ALIGNING SAMPLE…")
+        self.update_leds(amber=True)
+
         motor2_home_to_limit3()
         motor2_move_full_up()
-        self.alarm.setText("Aligned")
+
+        # After alignment completes
+        self.green_state = True
+        self.update_leds(green=True)
+
+        self.alarm.setText("ALIGN COMPLETE — READY")
 
     def on_rotate45(self):
-        self.alarm.setText("Rotating 45°…")
+        self.alarm.setText("ROTATING 45°…")
         motor3_rotate_45()
-        self.alarm.setText("Done.")
+        self.alarm.setText("ROTATION COMPLETE")
 
     # ============================================================
-    # E-STOP HANDLING
+    # LED MANAGEMENT
     # ============================================================
-    def check_estop(self):
-        if gpio_estop.faulted():
-            self.alarm.setText("E-STOP TRIGGERED")
-            for b in (
-                self.btn_preview, self.btn_export, self.btn_xray,
-                self.btn_open, self.btn_close,
-                self.btn_align, self.btn_rotate
-            ):
-                b.setEnabled(False)
+    def update_leds(self, *, amber=False, green=False, blue=False):
+        self.leds.write(self.leds.amber, amber)
+
+        if blue:
+            # blue ON → green OFF
+            self.leds.write(self.leds.green, False)
+            self.leds.write(self.leds.blue, True)
         else:
-            for b in (
-                self.btn_preview, self.btn_export, self.btn_xray,
-                self.btn_open, self.btn_close,
-                self.btn_align, self.btn_rotate
-            ):
-                b.setEnabled(True)
-            self.alarm.setText("OK")
+            self.leds.write(self.leds.blue, False)
+            self.leds.write(self.leds.green, green)
 
     # ============================================================
-    # CAMERA CONTROLS
+    # XRAY PHOTO
+    # ============================================================
+    def on_xray(self):
+        self.alarm.setText("XRAY — HV ON")
+        self.update_leds(blue=True)
+
+        hv_on()
+        time.sleep(3)   # exposure
+        hv_off()
+
+        self.update_leds(green=self.green_state)
+        self.alarm.setText("XRAY COMPLETE")
+
+    # ============================================================
+    # CAMERA / PREVIEW
     # ============================================================
     def on_preview(self):
         if not self.preview_on:
@@ -246,53 +309,57 @@ class MainWindow(QMainWindow):
         self.backend.stop()
         self.alarm.setText("STOPPED")
 
-    def on_xray(self):
-        if gpio_estop.faulted():
-            return
-        self.alarm.setText("Capturing XRAY…")
-        hv_on()
-        time.sleep(0.5)
-        img = self.backend.capture_still_bgr()
-        hv_off()
-        path,_ = capture_and_save_frame(img, save_dir="captures")
-        self.alarm.setText(f"Saved {path}")
-
-    def on_export(self):
-        img = self.backend.grab_bgr()
-        path,_ = capture_and_save_frame(img, save_dir="captures")
-        self.status.showMessage(f"Saved {path}")
-
-    def on_gallery(self):
-        paths = sorted(Path("captures").glob("capture_*.png"))
-        if not paths:
-            QMessageBox.information(self,"Gallery","No images.")
-            return
-        Gallery([str(p) for p in paths]).run()
-
-    # ============================================================
-    # FRAME UPDATE
-    # ============================================================
     def update_frame(self):
         if not self.preview_on:
             return
-        img = self.backend.grab_bgr()
-        h,w = img.shape[:2]
-        q = QImage(img.data, w,h, 3*w, QImage.Format.Format_BGR888)
-        px = QPixmap.fromImage(q).scaled(
+        gray = self.backend.grab_gray()
+        disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        h,w = disp.shape[:2]
+
+        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
+        px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
 
     # ============================================================
-    def update_leds(self, *, hv=False, fault=False, preview=False, armed=False):
-        state = "IDLE"
-        if fault: state="FAULT"
-        elif preview: state="PREVIEW"
-        elif hv: state="EXPOSE"
-        elif armed: state="ARMED"
-        self.leds.apply(alarm=fault, interlocks_ok=not fault, state=state)
+    # EXPORT / GALLERY
+    # ============================================================
+    def on_export(self):
+        try:
+            frame = self.backend.grab_bgr()
+            path,_ = capture_and_save_frame(frame, save_dir="captures")
+            self.status.showMessage(f"Saved {path}")
+        except Exception as e:
+            QMessageBox.critical(self,"Export",str(e))
 
+    def on_gallery(self):
+        paths = sorted(Path("captures").glob("capture_*.png"))
+        if not paths:
+            QMessageBox.information(self,"Gallery","No images found.")
+            return
+        Gallery([str(p) for p in paths]).run()
+
+    # ============================================================
+    # E-STOP HANDLING
+    # ============================================================
+    def check_estop(self):
+        if gpio_estop.faulted():
+            self.alarm.setText("E-STOP TRIGGERED")
+            self.update_leds()
+            self.btn_open.setEnabled(False)
+            self.btn_close.setEnabled(False)
+            self.btn_align.setEnabled(False)
+            self.btn_rotate.setEnabled(False)
+            self.btn_xray.setEnabled(False)
+        else:
+            self.btn_open.setEnabled(True)
+            self.btn_close.setEnabled(True)
+            self.btn_align.setEnabled(True)
+            self.btn_rotate.setEnabled(True)
+            self.btn_xray.setEnabled(True)
 
 # ============================================================
 def main():
@@ -300,7 +367,6 @@ def main():
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()
