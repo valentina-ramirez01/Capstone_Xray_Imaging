@@ -207,6 +207,7 @@ class MainWindow(QMainWindow):
         self.btn_xray    = QPushButton("XRAY Photo")
         self.btn_gallery = QPushButton("Gallery")
         self.btn_editor  = QPushButton("Editor")
+        self.btn_show_last = QPushButton("Show Last X-ray")
 
         # --------------------
         # Layout
@@ -220,8 +221,8 @@ class MainWindow(QMainWindow):
             self.btn_export, self.btn_xray,
             self.btn_open, self.btn_close,
             self.btn_align, self.btn_rotate,
-            self.btn_home3, 
-            self.btn_gallery, self.btn_editor
+            self.btn_home3, self.btn_gallery,
+            self.btn_show_last, self.btn_editor
         ):
             left.addWidget(b)
         left.addStretch()
@@ -252,6 +253,7 @@ class MainWindow(QMainWindow):
         self.btn_export.clicked.connect(self.on_export)
         self.btn_xray.clicked.connect(self.on_xray)
         self.btn_gallery.clicked.connect(self.on_gallery)
+        self.btn_show_last.clicked.connect(self.on_show_last)
 
         # Image refresh timer
         self.timer = QTimer(self)
@@ -342,9 +344,63 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
         cv2.imwrite(filename, img)
+        self.alarm.setText(f"XRAY COMPLETE — SAVED: {filename}")
+        
+        # Show the image on the GUI screen
+        disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # QImage expects RGB
+        h, w = disp.shape[:2]
+        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
+        px = QPixmap.fromImage(qimg).scaled(
+            self.view.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.view.setPixmap(px)
+
 
         self.update_leds(green=self.green_state)
         self.alarm.setText("XRAY COMPLETE")
+
+    # ============================================================
+    # SHOW LAST PHOTO TAKEN
+    # ============================================================
+        
+    def on_show_last(self):
+        # No preview running — otherwise, it will overwrite constantly
+        if self.preview_on:
+            QMessageBox.warning(self, "Preview Active",
+                "Turn OFF preview before showing last image.")
+            return
+
+        # Path to captures folder
+        import glob
+        path = "/home/xray_juanito/Capstone_Xray_Imaging/captures/*.jpg"
+
+        # Find latest file
+        files = sorted(glob.glob(path))
+        if not files:
+            QMessageBox.warning(self, "No Images", "No X-ray images found.")
+            return
+
+        last_file = files[-1]
+        img = cv2.imread(last_file)
+        if img is None:
+            QMessageBox.warning(self, "Error", "Could not load last X-ray image.")
+            return
+
+        # Convert for display
+        disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        h, w = disp.shape[:2]
+
+        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
+        px = QPixmap.fromImage(qimg).scaled(
+            self.view.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+        self.view.setPixmap(px)
+        self.alarm.setText(f"Showing Last X-ray: {last_file}")
 
     # ============================================================
     # CAMERA / PREVIEW
