@@ -162,7 +162,7 @@ class MainWindow(QMainWindow):
         self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
         self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
 
-        self.view  = QLabel("Camera", alignment=Qt.AlignmentFlagAlignCenter)
+        self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Buttons
         self.btn_open   = QPushButton("OPEN")
@@ -205,7 +205,7 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-        # Connect buttons
+        # Button connections
         self.btn_open.clicked.connect(self.on_open)
         self.btn_close.clicked.connect(self.on_close)
         self.btn_align.clicked.connect(self.on_align)
@@ -337,6 +337,8 @@ class MainWindow(QMainWindow):
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
+
+        QApplication.processEvents()   # CRITICAL FIX
 
         hv_on()
         time.sleep(0.4)
