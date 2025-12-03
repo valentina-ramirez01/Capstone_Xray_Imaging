@@ -119,20 +119,26 @@ def motor2_move_full_up():
 
 
 # ============================================================
-#  MOTOR 3 — 45° ROTATION (ULN2003)
+#  MOTOR 3 — 45° ROTATION + HOME (ULN2003)
 # ============================================================
 M3_PINS = [16, 6, 5, 25]
 for p in M3_PINS:
     GPIO.setup(p, GPIO.OUT)
     GPIO.output(p, 0)
 
-M3_SEQ = SEQ
+# Your existing ULN2003 half-step sequence
+M3_SEQ = SEQ      
 M3_SLEEP = 0.002
 M3_STEPS_45 = 512
-m3_index = 0
+
+m3_index = 0                # current index in the 8-step sequence
+m3_total_steps = 0          # total steps moved FORWARD from "home"
 
 
-def motor3_step():
+# ------------------------------------------------------------
+#  ONE STEP FORWARD
+# ------------------------------------------------------------
+def motor3_step_forward():
     global m3_index
     m3_index = (m3_index + 1) % 8
 
@@ -142,17 +148,60 @@ def motor3_step():
     time.sleep(M3_SLEEP)
 
 
+# ------------------------------------------------------------
+#  ONE STEP BACKWARD
+# ------------------------------------------------------------
+def motor3_step_backward():
+    global m3_index
+    m3_index = (m3_index - 1) % 8
+
+    for pin, val in zip(M3_PINS, M3_SEQ[m3_index]):
+        GPIO.output(pin, val)
+
+    time.sleep(M3_SLEEP)
+
+
+# ------------------------------------------------------------
+#  ROTATE +45°
+# ------------------------------------------------------------
 def motor3_rotate_45():
+    global m3_total_steps
+
     print("Motor3 → 45° rotation")
 
     for _ in range(M3_STEPS_45):
-        motor3_step()
+        motor3_step_forward()
+
+    m3_total_steps += M3_STEPS_45
 
     # turn all coils OFF
     for pin in M3_PINS:
         GPIO.output(pin, 0)
 
-    print("Motor3 → done.")
+    print(f"Motor3 → done. Total steps = {m3_total_steps}")
+
+
+# ------------------------------------------------------------
+#  HOME FUNCTION
+#  Move EXACT number of steps backward to return to zero.
+# ------------------------------------------------------------
+def motor3_home():
+    global m3_total_steps
+
+    print("Motor3 → HOMING...")
+
+    # reverse all steps taken so far
+    for _ in range(m3_total_steps):
+        motor3_step_backward()
+
+    # turn off coils
+    for pin in M3_PINS:
+        GPIO.output(pin, 0)
+
+    print("Motor3 → Home complete.")
+
+    m3_total_steps = 0
+
 
 
 # ============================================================

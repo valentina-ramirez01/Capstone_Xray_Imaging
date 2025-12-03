@@ -18,6 +18,8 @@ import numpy as np
 import cv2
 import serial
 import RPi.GPIO as GPIO
+from datetime import datetime
+
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
@@ -42,7 +44,8 @@ from xavier.stepper_Motor import (
     motor1_backward_until_switch1,
     motor2_home_to_limit3,
     motor2_move_full_up,
-    motor3_rotate_45
+    motor3_rotate_45,
+    motor3_home
 )
 
 # ---------------------------------------------------------------
@@ -131,6 +134,38 @@ class PiCamBackend:
         self._switch("preview")
         return img
 
+    def capture_xray_fixed(self):
+        self._ensure()
+
+        gain = 8
+        shutter_us = 3_000_000   # 3 seconds
+
+        config = self.cam.create_still_configuration(
+            main={"size": self.still_size},
+            controls={
+                "AnalogueGain": float(gain),
+                "ExposureTime": shutter_us,
+                "AeEnable": False,
+                "AwbEnable": False
+            }
+        )
+
+        self.cam.stop()
+        self.cam.configure(config)
+        self.cam.start()
+
+        time.sleep(0.3)           # settle
+        time.sleep(3.0 + 0.4)     # exposure + readout
+
+        frame = self.cam.capture_array("main")
+
+        # return to preview mode
+        self.cam.stop()
+        self.cam.configure(self.preview_cfg)
+        self.cam.start()
+
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
 
 # ============================================================
 # MAIN GUI WINDOW
@@ -162,6 +197,8 @@ class MainWindow(QMainWindow):
         self.btn_close  = QPushButton("CLOSE")
         self.btn_align  = QPushButton("ALIGN SAMPLE")
         self.btn_rotate = QPushButton("Rotate 45°")
+        self.btn_home3 = QPushButton("Home Rotation")
+
 
         # Camera/HV buttons
         self.btn_preview = QPushButton("Preview")
@@ -183,6 +220,7 @@ class MainWindow(QMainWindow):
             self.btn_export, self.btn_xray,
             self.btn_open, self.btn_close,
             self.btn_align, self.btn_rotate,
+            self.btn_home3, 
             self.btn_gallery, self.btn_editor
         ):
             left.addWidget(b)
@@ -206,6 +244,8 @@ class MainWindow(QMainWindow):
         self.btn_close.clicked.connect(self.on_close)
         self.btn_align.clicked.connect(self.on_align)
         self.btn_rotate.clicked.connect(self.on_rotate45)
+        self.btn_home3.clicked.connect(self.on_home3)
+
 
         self.btn_preview.clicked.connect(self.on_preview)
         self.btn_stop.clicked.connect(self.on_stop)
@@ -231,10 +271,12 @@ class MainWindow(QMainWindow):
     # MOTOR BUTTONS
     # ============================================================
     def on_open(self):
+        self.alarm.setText("RETURNING ROTATION TO HOME…")
+        motor3_home()
         self.alarm.setText("OPENING…")
         self.update_leds(amber=True)
         motor1_backward_until_switch1()
-        self.update_leds()   # amber off (but green stays based on state)
+        #self.update_leds()   # amber off (but green stays based on state)
         self.alarm.setText("OPEN COMPLETE")
 
     def on_close(self):
@@ -262,11 +304,18 @@ class MainWindow(QMainWindow):
         motor3_rotate_45()
         self.alarm.setText("ROTATION COMPLETE")
 
+    def on_home3(self):
+        self.alarm.setText("RETURNING TO HOME…")
+        motor3_home()
+        self.alarm.setText("HOME COMPLETE")
+
+
     # ============================================================
     # LED MANAGEMENT
     # ============================================================
     def update_leds(self, *, amber=False, green=False, blue=False):
         self.leds.write(self.leds.amber, amber)
+
 
         if blue:
             # blue ON → green OFF
@@ -283,21 +332,28 @@ class MainWindow(QMainWindow):
         self.alarm.setText("XRAY — HV ON")
         self.update_leds(blue=True)
 
-        hv_on()
-        time.sleep(3)   # exposure
+        hv_on()                   # TURN HV ON
+        time.sleep(0.5)           # Pre-exposure warmup
+        img = self.backend.capture_xray_fixed()
+        time.sleep(0.5)           #Read out time
         hv_off()
+
+         # File save
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
+        cv2.imwrite(filename, img)
 
         self.update_leds(green=self.green_state)
         self.alarm.setText("XRAY COMPLETE")
 
     # ============================================================
     # CAMERA / PREVIEW
-    # ============================================================
+    # ============================================================  
     def on_preview(self):
         if not self.preview_on:
             self.preview_on = True
             self.timer.start()
-            self.alarm.setText("Preview ON")
+            self.alarm.setText("Preview ON")     
         else:
             self.preview_on = False
             self.timer.stop()

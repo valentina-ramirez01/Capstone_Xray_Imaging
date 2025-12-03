@@ -5,7 +5,7 @@ import time
 IN1 = 16
 IN2 = 6
 IN3 = 5
-IN4 = 25
+IN4 = 24
 
 LIMIT_PIN = 22   # bottom/home switch
 
@@ -70,10 +70,10 @@ try:
     print("\n--- SCISSOR LIFT AUTO HOME & FULL TRAVEL MOVE ---\n")
 
     # 1️⃣ HOME (move CCW until limit switch triggers)
-    home_to_limit(direction=+1)   # -1 = CCW (down)
+    home_to_limit(direction=-1)   # -1 = CCW (down)
 
     # 2️⃣ MOVE TO MAX HEIGHT (CW)
-    move_steps(direction=-1, steps=FULL_TRAVEL_STEPS)
+    move_steps(direction=+1, steps=FULL_TRAVEL_STEPS)
 
     print("\nReached TOP position successfully.")
 

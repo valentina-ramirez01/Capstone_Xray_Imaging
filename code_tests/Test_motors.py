@@ -94,12 +94,12 @@ def motor2_forward_test(steps=800):
 # -------------------------------------------------------------------
 # MOTOR 1 – VIA ARDUINO
 # -------------------------------------------------------------------
-ser = serial.Serial("/dev/ttyACM1", 115200, timeout=1)
+ser = serial.Serial("/dev/ttyACM0", 115200, timeout=1)
 time.sleep(2)
 
 def motor1_open():
     print("Motor 1 → OPEN until SW1")
-    while GPIO.input(SW1) == 1:
+    while GPIO.input(SW1) == 0:
         ser.write(b"M1F\n")  # reversed logically if needed
         time.sleep(0.002)
     print("✔ Motor 1 OPEN (SW1 reached)")
