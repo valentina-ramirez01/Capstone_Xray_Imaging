@@ -1,64 +1,64 @@
-import RPi.GPIO as GPIO
+import serial
 import time
+import RPi.GPIO as GPIO
 
-# -------------------------
-# DRV8825 Pins (CNC Shield X Axis)
-# -------------------------
-STEP_PIN = 2
-DIR_PIN  = 5
-EN_PIN   = 8
-
-PULSE_US = 800   # Try 800–1200 if motor is rough
-
-
+# -----------------------------
+# GPIO SETUP
+# -----------------------------
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(STEP_PIN, GPIO.OUT)
-GPIO.setup(DIR_PIN,  GPIO.OUT)
-GPIO.setup(EN_PIN,   GPIO.OUT)
 
-# Enable driver (LOW = enabled on most DRV8825 boards)
-GPIO.output(EN_PIN, GPIO.LOW)
+SW1 = 17   # OPEN limit switch
+SW2 = 18   # CLOSE limit switch
 
-print("\n=== MOTOR 1 DEBUG ===")
-print("s = forward")
-print("r = backward")
-print("q = quit\n")
+GPIO.setup(SW1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SW2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-def step_once():
-    GPIO.output(STEP_PIN, GPIO.HIGH)
-    time.sleep(PULSE_US / 1_000_000)
-    GPIO.output(STEP_PIN, GPIO.LOW)
-    time.sleep(PULSE_US / 1_000_000)
+# -----------------------------
+# ARDUINO SERIAL
+# -----------------------------
+ser = serial.Serial('/dev/ttyACM1', 115200, timeout=1)
+time.sleep(2)
+
+print("=== MOTOR 1 TEST ===")
+print("Commands:")
+print("   o → OPEN  (backwards until SW1)")
+print("   c → CLOSE (forward until SW2)")
+print("   q → quit")
+
+# -----------------------------
+# MOTOR MOVEMENT FUNCTIONS
+# -----------------------------
+def motor_open_until_sw1():
+    print("Opening (BACKWARD)…")
+    while GPIO.input(SW1) == 1:     # 1 = NOT pressed
+        ser.write(b"M1B\n")
+        time.sleep(0.002)
+    print("SW1 reached! (OPEN LIMIT)")
 
 
-try:
-    while True:
-        cmd = input(">> ").strip().lower()
+def motor_close_until_sw2():
+    print("Closing (FORWARD)…")
+    while GPIO.input(SW2) == 1:
+        ser.write(b"M1F\n")
+        time.sleep(0.002)
+    print("SW2 reached! (CLOSE LIMIT)")
 
-        if cmd == "q":
-            print("Quitting.")
-            break
 
-        elif cmd == "s":
-            print("FORWARD... (press ENTER to stop)")
-            GPIO.output(DIR_PIN, GPIO.HIGH)   # forward
-            while True:
-                step_once()
-                if sys.stdin in select.select([sys.stdin],[],[],0)[0]:
-                    break
+# -----------------------------
+# MAIN LOOP
+# -----------------------------
+while True:
+    cmd = input(">> ").strip().lower()
 
-        elif cmd == "r":
-            print("BACKWARD... (press ENTER to stop)")
-            GPIO.output(DIR_PIN, GPIO.LOW)   # backward
-            while True:
-                step_once()
-                if sys.stdin in select.select([sys.stdin],[],[],0)[0]:
-                    break
+    if cmd == "o":
+        motor_open_until_sw1()
 
-        else:
-            print("Unknown command")
+    elif cmd == "c":
+        motor_close_until_sw2()
 
-finally:
-    GPIO.output(EN_PIN, GPIO.HIGH)  # disable driver
-    GPIO.cleanup()
-    print("GPIO cleaned up.")
+    elif cmd == "q":
+        print("Exiting.")
+        break
+
+    else:
+        print("Unknown command. Use o/c/q.")
