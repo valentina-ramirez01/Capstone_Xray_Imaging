@@ -36,7 +36,7 @@ from xavier.leds import LedPanel
 from xavier import gpio_estop
 
 # ---------------------------------------------------------------
-# Stepper Motor imports (FINAL WORKING FUNCTIONS)
+# Stepper Motor imports
 # ---------------------------------------------------------------
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
@@ -48,7 +48,7 @@ from xavier.stepper_Motor import (
 )
 
 # ---------------------------------------------------------------
-# Serial link for Motor 1 (Arduino)
+# Serial for Motor 1 (Arduino)
 # ---------------------------------------------------------------
 ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 
@@ -176,27 +176,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280,720)
 
-        # LED controller
         self.leds = LedPanel()
         self.green_state = False
 
-        # Camera backend
         self.backend = PiCamBackend()
         self.backend.start()
         self.preview_on = False
 
-        # Widgets
         self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
         self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Motor buttons
+        # Buttons
         self.btn_open   = QPushButton("OPEN")
         self.btn_close  = QPushButton("CLOSE")
         self.btn_align  = QPushButton("ALIGN SAMPLE")
         self.btn_rotate = QPushButton("Rotate 45°")
         self.btn_home3 = QPushButton("Home Rotation")
 
-        # Camera/HV buttons
         self.btn_preview = QPushButton("Preview")
         self.btn_stop    = QPushButton("STOP")
         self.btn_export  = QPushButton("Export Last")
@@ -246,15 +242,13 @@ class MainWindow(QMainWindow):
         self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_show_last.clicked.connect(self.on_show_last)
 
-        # ⭐ NEW — Connect Editor button
         self.btn_editor.clicked.connect(self.on_editor)
 
-        # Image refresh timer
+        # Timers
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
 
-        # E-stop checker
         self.estop_timer = QTimer(self)
         self.estop_timer.setInterval(200)
         self.estop_timer.timeout.connect(self.check_estop)
@@ -263,7 +257,7 @@ class MainWindow(QMainWindow):
         self.update_leds()
 
     # ============================================================
-    # MOTOR BUTTONS
+    # MOTOR CONTROLS
     # ============================================================
     def on_open(self):
         self.alarm.setText("RETURNING ROTATION TO HOME…")
@@ -300,11 +294,10 @@ class MainWindow(QMainWindow):
         self.alarm.setText("HOME COMPLETE")
 
     # ============================================================
-    # LED MANAGEMENT
+    # LED PANEL
     # ============================================================
     def update_leds(self, *, amber=False, green=False, blue=False):
         self.leds.write(self.leds.amber, amber)
-
         if blue:
             self.leds.write(self.leds.green, False)
             self.leds.write(self.leds.blue, True)
@@ -328,7 +321,6 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
         cv2.imwrite(filename, img)
-        self.alarm.setText(f"XRAY COMPLETE — SAVED: {filename}")
 
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = disp.shape[:2]
@@ -345,7 +337,7 @@ class MainWindow(QMainWindow):
         self.alarm.setText("XRAY COMPLETE")
 
     # ============================================================
-    # SHOW LAST PHOTO
+    # SHOW LAST IMAGE
     # ============================================================
     def on_show_last(self):
         if self.preview_on:
@@ -354,8 +346,11 @@ class MainWindow(QMainWindow):
             return
 
         import glob
-        path = "/home/xray_juanito/Capstone_Xray_Imaging/captures/*.jpg"
-        files = sorted(glob.glob(path))
+        base_dir = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
+        files = sorted(glob.glob(base_dir + "/*.jpg") +
+                       glob.glob(base_dir + "/*.jpeg") +
+                       glob.glob(base_dir + "/*.png"))
+
         if not files:
             QMessageBox.warning(self, "No Images", "No X-ray images found.")
             return
@@ -363,7 +358,7 @@ class MainWindow(QMainWindow):
         last_file = files[-1]
         img = cv2.imread(last_file)
         if img is None:
-            QMessageBox.warning(self, "Error", "Could not load last X-ray image.")
+            QMessageBox.warning(self, "Error", "Could not load last image.")
             return
 
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -375,12 +370,12 @@ class MainWindow(QMainWindow):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
-
         self.view.setPixmap(px)
-        self.alarm.setText(f"Showing Last X-ray: {last_file}")
+
+        self.alarm.setText(f"Showing Last: {last_file}")
 
     # ============================================================
-    # CAMERA / PREVIEW
+    # LIVE PREVIEW
     # ============================================================
     def on_preview(self):
         if not self.preview_on:
@@ -424,21 +419,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self,"Export",str(e))
 
+    # ⭐ FIXED VERSION — LOADS ALL IMAGES (jpg/jpeg/png)
     def on_gallery(self):
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
-        jpgs    = list(base_dir.glob("capture_*.jpg"))
-        pngs    = list(base_dir.glob("capture_*.png"))
-        edited  = list(base_dir.glob("edited_*.png"))
 
-        paths = sorted(jpgs + pngs + edited)
-        if not paths:
+        all_imgs = []
+        for ext in ("*.jpg", "*.jpeg", "*.png"):
+            all_imgs.extend(base_dir.glob(ext))
+
+        all_imgs = sorted(all_imgs)
+
+        if not all_imgs:
             QMessageBox.information(self, "Gallery", "No images found in captures folder.")
             return
 
-        Gallery([str(p) for p in paths]).run()
+        Gallery([str(p) for p in all_imgs]).run()
 
     # ============================================================
-    # ⭐ NEW IMAGE EDITOR BUTTON IMPLEMENTATION
+    # EDITOR WINDOW
     # ============================================================
     def on_editor(self):
         if self.preview_on:
@@ -448,7 +446,9 @@ class MainWindow(QMainWindow):
 
         import glob
         base_dir = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
-        files = sorted(glob.glob(base_dir + "/*.jpg") + glob.glob(base_dir + "/*.png"))
+        files = sorted(glob.glob(base_dir + "/*.jpg") +
+                       glob.glob(base_dir + "/*.jpeg") +
+                       glob.glob(base_dir + "/*.png"))
 
         if not files:
             QMessageBox.warning(self, "No Images", "No images found to edit.")
@@ -487,6 +487,7 @@ def main():
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
