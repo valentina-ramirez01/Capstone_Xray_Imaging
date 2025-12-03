@@ -231,6 +231,11 @@ class MainWindow(QMainWindow):
 
         self.all_leds_off()
 
+        # ------------------------------------------------------------
+        # START E-STOP MONITOR THREAD
+        # ------------------------------------------------------------
+        gpio_estop.start_monitor(self.on_estop_fault_gui)
+
 
 
     # ============================================================
@@ -263,6 +268,59 @@ class MainWindow(QMainWindow):
 
         self.alarm.setStyleSheet(st)
         self.alarm.setText(text)
+
+
+
+    # ============================================================
+    # EMERGENCY STOP CALLBACK
+    # ============================================================
+    def on_estop_fault_gui(self):
+        print("[GUI] E-STOP TRIGGERED — FULL SHUTDOWN")
+
+        # Kill HV
+        try: hv_off()
+        except: pass
+
+        # Stop camera & timers
+        try:
+            self.preview_on = False
+            self.timer.stop()
+            self.backend.stop()
+        except:
+            pass
+
+        # LEDs: red
+        self.all_leds_off()
+        self.leds.write(self.leds.red, True)
+
+        # GUI banner
+        self.banner("EMERGENCY STOP — SYSTEM SHUTDOWN", color="red")
+        QApplication.processEvents()
+
+        # Disable all buttons
+        for b in (
+            self.btn_open, self.btn_close, self.btn_align,
+            self.btn_rotate, self.btn_home3, self.btn_xray,
+            self.btn_preview, self.btn_stop, self.btn_export,
+            self.btn_gallery, self.btn_show_last, self.btn_editor
+        ):
+            b.setEnabled(False)
+
+        print("[GUI] Controls disabled for safety.")
+
+
+
+
+    # ============================================================
+    # E-STOP POLLING FOR GUI STATE
+    # ============================================================
+    def check_estop(self):
+        if gpio_estop.faulted():
+            self.all_leds_off()
+            self.leds.write(self.leds.red, True)
+            self.banner("FAULT — E-STOP PRESSED", color="red")
+
+            return
 
 
 
@@ -338,7 +396,7 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
 
-        QApplication.processEvents()   # CRITICAL FIX
+        QApplication.processEvents()
 
         hv_on()
         time.sleep(0.4)
@@ -356,7 +414,7 @@ class MainWindow(QMainWindow):
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         cv2.imwrite(filename, img)
 
-        # Display
+        # Display image
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h,w = disp.shape[:2]
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
@@ -478,33 +536,21 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # E-STOP
-    # ============================================================
-    def check_estop(self):
-        if gpio_estop.faulted():
-            self.all_leds_off()
-            self.leds.write(self.leds.red, True)
-            self.banner("Fault Detected", color="red")
-
-            self.btn_open.setEnabled(False)
-            self.btn_close.setEnabled(False)
-            self.btn_align.setEnabled(False)
-            self.btn_rotate.setEnabled(False)
-            self.btn_xray.setEnabled(False)
-        else:
-            self.btn_open.setEnabled(True)
-            self.btn_close.setEnabled(True)
-            self.btn_align.setEnabled(True)
-            self.btn_rotate.setEnabled(True)
-            self.btn_xray.setEnabled(True)
-
-
-
-    # ============================================================
     # EXIT CLEANUP
     # ============================================================
     def closeEvent(self,event):
+
+        try: hv_off()
+        except: pass
+
+        try: self.backend.stop()
+        except: pass
+
         self.all_leds_off()
+
+        try: gpio_estop.stop_monitor()
+        except: pass
+
         super().closeEvent(event)
 
 

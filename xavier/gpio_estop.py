@@ -3,7 +3,7 @@ import time
 import threading
 import RPi.GPIO as GPIO
 
-PIN_ESTOP = 17
+PIN_ESTOP =26
 DEBOUNCE_S = 0.02
 
 _GPIO_READY = False
