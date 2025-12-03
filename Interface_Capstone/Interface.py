@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 
-from xavier.io_utils import capture_and_save_frame
+from xavier.io_utils import capture_and_save_image
 from xavier.gallery import Gallery, ImageEditorWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
@@ -148,7 +148,7 @@ class PiCamBackend:
 
 
 # ============================================================
-# MAIN INTERFACE
+# MAIN GUI WINDOW
 # ============================================================
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -430,8 +430,8 @@ class MainWindow(QMainWindow):
     def on_export(self):
         try:
             frame = self.backend.grab_bgr()
-            path,_ = capture_and_save_frame(frame, save_dir="captures")
-            self.status.showMessage(f"Saved {path}")
+            filename,_ = capture_and_save_image(frame, save_dir="captures")
+            self.status.showMessage(f"Saved {filename}")
         except Exception as e:
             QMessageBox.critical(self,"Export",str(e))
 
@@ -494,6 +494,23 @@ class MainWindow(QMainWindow):
             self.btn_align.setEnabled(True)
             self.btn_rotate.setEnabled(True)
             self.btn_xray.setEnabled(True)
+
+    # ============================================================
+    # SHUTDOWN — TURN OFF ALL LEDS
+    # ============================================================
+    def closeEvent(self, event):
+        """
+        When GUI closes, turn off ALL LEDs for safety.
+        """
+        try:
+            self.leds.write(self.leds.red, False)
+            self.leds.write(self.leds.amber, False)
+            self.leds.write(self.leds.green, False)
+            self.leds.write(self.leds.blue, False)
+        except Exception as e:
+            print("LED shutdown error:", e)
+
+        super().closeEvent(event)
 
 
 # ============================================================
