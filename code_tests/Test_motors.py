@@ -2,39 +2,37 @@ import time
 import serial
 import RPi.GPIO as GPIO
 
-# ============================================================
-# GPIO CONFIG
-# ============================================================
 GPIO.setmode(GPIO.BCM)
 
-# ----- LIMIT SWITCHES -----
-SW1 = 17   # Motor 1 OPEN stop
-SW2 = 18   # Motor 1 CLOSE stop
-SW3 = 22   # Motor 2 ORIGIN stop
+# -------------------------------------------------------------------
+# SWITCHES
+# -------------------------------------------------------------------
+SW1 = 17    # Motor 1 OPEN limit
+SW2 = 18    # Motor 1 CLOSE limit
+SW3 = 22    # Motor 2 origin
 
-GPIO.setup(SW1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.setup(SW2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.setup(SW3, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+for sw in (SW1, SW2, SW3):
+    GPIO.setup(sw, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# ============================================================
-# MOTOR 2 ULN2003 PINS (reverse & forward)
-# ============================================================
-M2_PINS = [19, 20, 12, 24]  # motor 2
+# -------------------------------------------------------------------
+# MOTOR 2 – ULN2003 PINS (REVISED)
+# -------------------------------------------------------------------
+M2_PINS = [19, 20, 12, 24]
 for p in M2_PINS:
     GPIO.setup(p, GPIO.OUT)
     GPIO.output(p, 0)
 
-# ============================================================
-# MOTOR 3 ULN2003 PINS (45° rotation)
-# ============================================================
+# -------------------------------------------------------------------
+# MOTOR 3 – ULN2003 PINS
+# -------------------------------------------------------------------
 M3_PINS = [16, 6, 5, 25]
 for p in M3_PINS:
     GPIO.setup(p, GPIO.OUT)
     GPIO.output(p, 0)
 
-# ============================================================
-# STEPPER SEQUENCE + CONSTANTS
-# ============================================================
+# -------------------------------------------------------------------
+# STEPPER SEQUENCE
+# -------------------------------------------------------------------
 SEQ = [
     [1,0,0,0],
     [1,1,0,0],
@@ -43,136 +41,123 @@ SEQ = [
     [0,0,1,0],
     [0,0,1,1],
     [0,0,0,1],
-    [1,0,0,1]
+    [1,0,0,1],
 ]
 
-STEP_DELAY = 0.002
-STEPS_45 = 512
-STEPS_90 = 1024
+STEP_DELAY = 0.003    # slower = safer
 
-def _step_forward(pins):
-    for pat in SEQ:
-        for p,val in zip(pins,pat):
-            GPIO.output(p,val)
+def step_forward(pins):
+    for pattern in SEQ:
+        for pin, val in zip(pins, pattern):
+            GPIO.output(pin, val)
         time.sleep(STEP_DELAY)
 
-def _step_backward(pins):
-    for pat in reversed(SEQ):
-        for p,val in zip(pins,pat):
-            GPIO.output(p,val)
+def step_backward(pins):
+    for pattern in reversed(SEQ):
+        for pin, val in zip(pins, pattern):
+            GPIO.output(pin, val)
         time.sleep(STEP_DELAY)
 
-def _motor_off(pins):
+def motor_off(pins):
     for p in pins:
-        GPIO.output(p,0)
+        GPIO.output(p, 0)
 
-# ============================================================
-# MOTOR 1 — ARDUINO SERIAL CONTROL
-# ============================================================
-try:
-    ser = serial.Serial('/dev/ttyACM1', 115200, timeout=0.01)
-    time.sleep(2)
-    print("Connected to Arduino.")
-except:
-    print("ERROR: Arduino not found at /dev/ttyACM1")
-    ser = None
+# -------------------------------------------------------------------
+# MOTOR 3 – 45° ROTATION EXACTLY ONCE
+# -------------------------------------------------------------------
+STEPS_45 = 512
 
-def motor1_forward_until_limit():
-    print("Motor 1 → OPEN (forward) until SW1")
-    if not ser:
-        print("Arduino not connected.")
-        return
+def motor3_rotate_45():
+    print("Motor 3 → rotating 45° once")
+    for _ in range(STEPS_45):
+        step_forward(M3_PINS)
+    motor_off(M3_PINS)
+    print("✔ Motor 3 finished 45°")
+
+# -------------------------------------------------------------------
+# MOTOR 2 – TEST FORWARD AND BACKWARD
+# -------------------------------------------------------------------
+def motor2_backward_test():
+    print("Motor 2 → backward test (until SW3)")
+    while GPIO.input(SW3) == 1:
+        step_backward(M2_PINS)
+    motor_off(M2_PINS)
+    print("✔ Motor 2 reached origin (SW3)")
+
+def motor2_forward_test(steps=800):
+    print("Motor 2 → forward test")
+    for _ in range(steps):
+        step_forward(M2_PINS)
+    motor_off(M2_PINS)
+    print("✔ Motor 2 forward movement done")
+
+# -------------------------------------------------------------------
+# MOTOR 1 – VIA ARDUINO
+# -------------------------------------------------------------------
+ser = serial.Serial("/dev/ttyACM1", 115200, timeout=1)
+time.sleep(2)
+
+def motor1_open():
+    print("Motor 1 → OPEN until SW1")
     while GPIO.input(SW1) == 1:
-        ser.write(b"M1F\n")
-        time.sleep(0.003)
-    print("Reached OPEN limit (SW1)")
+        ser.write(b"M1F\n")  # reversed logically if needed
+        time.sleep(0.002)
+    print("✔ Motor 1 OPEN (SW1 reached)")
 
-def motor1_backward_until_limit():
-    print("Motor 1 → CLOSE (backward) until SW2")
-    if not ser:
-        print("Arduino not connected.")
-        return
+def motor1_close():
+    print("Motor 1 → CLOSE until SW2")
     while GPIO.input(SW2) == 1:
         ser.write(b"M1B\n")
-        time.sleep(0.003)
-    print("Reached CLOSE limit (SW2)")
+        time.sleep(0.002)
+    print("✔ Motor 1 CLOSE (SW2 reached)")
 
-# ============================================================
-# MOTOR 2 — AUTO ALIGN SEQUENCE
-# ============================================================
-def motor2_backward_until_origin():
-    print("Motor 2 → BACKWARD until SW3")
-    while GPIO.input(SW3) == 1:
-        _step_backward(M2_PINS)
-    _motor_off(M2_PINS)
-    print("Motor 2 reached origin (SW3)")
+# -------------------------------------------------------------------
+# MAIN TEST LOOP
+# -------------------------------------------------------------------
+print("""
+==========================
+  MOTOR TEST CONSOLE
+==========================
+Controls:
+  1 → Motor 1 OPEN (until SW1)
+  2 → Motor 1 CLOSE (until SW2)
 
-def motor2_forward_90():
-    print("Motor 2 → FORWARD 90°")
-    for _ in range(STEPS_90):
-        _step_forward(M2_PINS)
-    _motor_off(M2_PINS)
-    print("Motor 2 90° forward complete")
+  3 → Motor 2 BACKWARD (until SW3 origin)
+  4 → Motor 2 FORWARD (manual test)
 
-def align_sample():
-    if GPIO.input(SW2) == 1:
-        print("ERROR: Cannot align — Motor 1 not at SW2 yet!")
-        return
-    print("Aligning sample in 0.5s …")
-    time.sleep(0.5)
+  5 → Motor 3 rotate 45° ONCE
 
-    motor2_backward_until_origin()
-    time.sleep(0.5)
-    motor2_forward_90()
+  q → quit
+==========================
+""")
 
-# ============================================================
-# MOTOR 3 — 45 DEGREE ROTATION
-# ============================================================
-def rotate_45():
-    print("Motor 3 → 45 degrees")
-    for _ in range(STEPS_45):
-        _step_forward(M3_PINS)
-    _motor_off(M3_PINS)
-    print("Motor 3 45° rotation complete")
-
-# ============================================================
-# TEST MENU
-# ============================================================
-def menu():
-    print("\n=== MOTOR TEST MENU ===")
-    print("1 → Motor 1 OPEN   (until SW1)")
-    print("2 → Motor 1 CLOSE  (until SW2)")
-    print("3 → Motor 2 ALIGN SAMPLE (requires SW2)")
-    print("4 → Motor 3 ROTATE 45°")
-    print("q → Quit")
-    return input("Select: ").strip().lower()
-
-# ============================================================
-# MAIN LOOP
-# ============================================================
 try:
     while True:
-        choice = menu()
+        cmd = input("Select: ").strip().lower()
 
-        if choice == "1":
-            motor1_forward_until_limit()
+        if cmd == "1":
+            motor1_open()
 
-        elif choice == "2":
-            motor1_backward_until_limit()
+        elif cmd == "2":
+            motor1_close()
 
-        elif choice == "3":
-            align_sample()
+        elif cmd == "3":
+            motor2_backward_test()
 
-        elif choice == "4":
-            rotate_45()
+        elif cmd == "4":
+            motor2_forward_test()
 
-        elif choice == "q":
-            print("Bye!")
+        elif cmd == "5":
+            motor3_rotate_45()
+
+        elif cmd == "q":
+            print("Exiting…")
             break
 
         else:
             print("Invalid option.")
 
 finally:
+    ser.close()
     GPIO.cleanup()
-    print("GPIO cleaned up.")
+    print("GPIO cleaned up. Goodbye!")
