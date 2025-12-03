@@ -15,7 +15,7 @@ from xavier.tools import apply_contrast_brightness, apply_zoom, fit_in_window
 
 
 # =====================================================================
-#   NEW: PYQT6 IMAGE EDITOR WINDOW
+#   PYQT6 IMAGE EDITOR WINDOW
 # =====================================================================
 class ImageEditorWindow(QWidget):
     def __init__(self, img_path: str):
@@ -31,7 +31,7 @@ class ImageEditorWindow(QWidget):
             self.close()
             return
 
-        # Working copy
+        # Working copy parameters
         self.alpha = 1.0     # contrast
         self.beta = 0        # brightness
 
@@ -66,7 +66,6 @@ class ImageEditorWindow(QWidget):
     # --------------------------------------------------------------
     def update_preview(self):
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
-
         h, w = edited.shape[:2]
         qimg = QImage(edited.data, w, h, 3*w, QImage.Format.Format_BGR888)
         px = QPixmap.fromImage(qimg).scaled(
@@ -92,13 +91,12 @@ class ImageEditorWindow(QWidget):
         out_path = os.path.join(base_dir, f"edited_{n:04d}.png")
 
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
-
         cv2.imwrite(out_path, edited)
         QMessageBox.information(self, "Saved", f"Edited copy saved:\n{out_path}")
 
 
 # =====================================================================
-#   ORIGINAL GALLERY (unchanged except new Editor button)
+#   MAIN GALLERY (OpenCV Window)
 # =====================================================================
 class Gallery:
     """
@@ -126,7 +124,7 @@ class Gallery:
         editor = ImageEditorWindow(path)
         editor.show()
 
-    # ---------------- existing internal functionality ----------------
+    # ---------------- Viewer Internals ----------------
     def set_contrast(self, alpha: float) -> None:
         self.alpha = float(np.clip(alpha, 0.1, 5.0))
 
@@ -155,6 +153,7 @@ class Gallery:
     def _render_current(self) -> np.ndarray:
         path = self.files[self.idx]
         img = self._load(self.idx)
+
         if img is None:
             canvas = np.zeros((240, 960, 3), dtype=np.uint8)
             cv2.putText(canvas, f"Couldn't read: {os.path.basename(path)}",
@@ -165,8 +164,8 @@ class Gallery:
 
         proc = apply_zoom(img, self.zoom)
         proc = apply_contrast_brightness(proc, self.alpha, self.beta)
-
         disp = fit_in_window(proc, 1280, 720)
+
         hud = (
             f"{self.idx+1}/{len(self.files)}  {os.path.basename(path)}  |  "
             f"zoom {self.zoom:.2f}x  alpha {self.alpha:.2f}  beta {self.beta:.0f}"
@@ -179,6 +178,9 @@ class Gallery:
         self._last_processed = proc
         return disp
 
+    # =================================================================
+    # FIXED KEYBOARD HANDLING — RASPBERRY PI + OPENCV COMPATIBLE
+    # =================================================================
     def run(self):
         if not self.files:
             print("No images.")
@@ -195,12 +197,24 @@ class Gallery:
                 cv2.destroyWindow(self.win)
                 break
 
-            # Prev / Next
-            elif k in (81, 2424832):   # left arrow
+            # -------------------------------
+            # LEFT ARROW (all possible keycodes)
+            # -------------------------------
+            elif k in (81, 2424832, 65361):
                 self.idx = (self.idx - 1) % len(self.files)
-            elif k in (83, 2555904):   # right arrow
+
+            # -------------------------------
+            # RIGHT ARROW (all possible keycodes)
+            # -------------------------------
+            elif k in (83, 2555904, 65363):
                 self.idx = (self.idx + 1) % len(self.files)
 
-            # Edit button (press "E")
-            elif k == ord('E'):
+            # Optional: Zoom with Up/Down arrows
+            elif k in (82, 65362):   # UP
+                self.adjust_zoom(+0.1)
+            elif k in (84, 65364):   # DOWN
+                self.adjust_zoom(-0.1)
+
+            # Edit (E key)
+            elif k in (ord('e'), ord('E')):
                 self.open_in_editor()
