@@ -1,41 +1,37 @@
-# stepper_Motor.py — FINAL A1 VERSION
+# ============================================================
+# stepper_Motor.py  — Motor1, Motor2, Motor3 with safety logic
+# ============================================================
+
 import RPi.GPIO as GPIO
 import time
 
 GPIO.setmode(GPIO.BCM)
 
-# ============================================================
-# MOTOR 3 — Rotate 45° (Sample Rotate button)
-# Pins: 16, 6, 5, 25
-# ============================================================
-M3_PINS = [16, 6, 5, 25]
-for p in M3_PINS:
-    GPIO.setup(p, GPIO.OUT)
-    GPIO.output(p, 0)
+# ------------------------------------------------------------
+# MOTOR 1 — DRV8825 (controlled by Arduino)
+# (Python only sends commands, no GPIO pins here)
+# ------------------------------------------------------------
+import serial
+ser = serial.Serial('/dev/ttyACM1', 115200, timeout=1)
+time.sleep(2)
 
-# ============================================================
-# MOTOR 2 — Align Sample (Triggered manually by GUI)
-# Pins: 19, 20, 12, 24
-# ============================================================
-M2_PINS = [19, 20, 12, 24]
+# Motor-1 limit switches
+SW1 = 17   # OPEN limit
+SW2 = 18   # CLOSE limit
+GPIO.setup(SW1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SW2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# ------------------------------------------------------------
+# MOTOR 2 — 28BYJ-48 (verified working with your test code)
+# ------------------------------------------------------------
+M2_PINS = [19,20,12,24]
 for p in M2_PINS:
     GPIO.setup(p, GPIO.OUT)
     GPIO.output(p, 0)
 
-# ============================================================
-# SWITCHES
-# ============================================================
-SW1 = 17     # Motor 1 OPEN limit (Arduino)
-SW2 = 18     # Motor 1 CLOSE limit (Arduino triggers ready state)
-SW3 = 22     # Motor 2 origin
-
-GPIO.setup(SW1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.setup(SW2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+SW3 = 22   # Motor 2 origin switch
 GPIO.setup(SW3, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# ============================================================
-# Stepper Sequence
-# ============================================================
 SEQ = [
     [1,0,0,0],
     [1,1,0,0],
@@ -47,61 +43,99 @@ SEQ = [
     [1,0,0,1]
 ]
 
-STEP_DELAY = 0.002
-STEPS_45 = 512
-STEPS_90 = 1024
+STEP_SLEEP = 0.0015
 
+step_index_M2 = 0
 
-def _step_forward(pins):
-    for pattern in SEQ:
-        for pin, val in zip(pins, pattern):
-            GPIO.output(pin, val)
-        time.sleep(STEP_DELAY)
+def _m2_step(direction):
+    global step_index_M2
+    step_index_M2 = (step_index_M2 + direction) % 8
+    for pin, val in zip(M2_PINS, SEQ[step_index_M2]):
+        GPIO.output(pin, val)
+    time.sleep(STEP_SLEEP)
 
-
-def _step_backward(pins):
-    for pattern in reversed(SEQ):
-        for pin, val in zip(pins, pattern):
-            GPIO.output(pin, val)
-        time.sleep(STEP_DELAY)
-
-
-def _motor_off(pins):
-    for p in pins:
-        GPIO.output(p, 0)
-
-
-# ============================================================
-# MOTOR 3 — ROTATE 45°
-# ============================================================
-def motor3_rotate_45():
-    for _ in range(STEPS_45):
-        _step_forward(M3_PINS)
-    _motor_off(M3_PINS)
-
-
-# ============================================================
-# MOTOR 2 — Align Sample to Camera (A1 behavior)
-# 1. Move backward until SW3 (origin)
-# 2. Then move forward 90°
-# ============================================================
-def motor2_align():
-    print("Motor 2 alignment starting in 0.5s…")
-    time.sleep(0.5)
-
-    # BACKWARD until origin
-    print("Motor 2 → backward to SW3 (origin)…")
+def motor2_home_to_limit():
     while GPIO.input(SW3) == 1:
-        _step_backward(M2_PINS)
-    _motor_off(M2_PINS)
+        _m2_step(+1)
+    return True
 
-    print("Origin reached, waiting 0.5s…")
-    time.sleep(0.5)
+def motor2_move_steps(direction, steps):
+    for _ in range(steps):
+        _m2_step(direction)
 
-    # FORWARD 90°
-    print("Motor 2 → forward 90° for alignment…")
-    for _ in range(STEPS_90):
-        _step_forward(M2_PINS)
+# ============================================================
+# MOTOR 3 — 28BYJ-48 sample rotation + ZERO POSITION LOGIC
+# ============================================================
 
-    _motor_off(M2_PINS)
-    print("Motor 2 alignment complete.")
+M3_PINS = [16,6,5,25]
+for p in M3_PINS:
+    GPIO.setup(p, GPIO.OUT)
+    GPIO.output(p, 0)
+
+SW_M3_HOME = 23     # 🆕 Motor 3 home position switch
+GPIO.setup(SW_M3_HOME, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+step_index_M3 = 0
+M3_angle = 0          # tracks 0°, 45°, 90°, 135°... etc.
+
+def _m3_step(direction):
+    global step_index_M3
+    step_index_M3 = (step_index_M3 + direction) % 8
+    for pin, val in zip(M3_PINS, SEQ[step_index_M3]):
+        GPIO.output(pin, val)
+    time.sleep(STEP_SLEEP)
+
+def motor3_home():
+    """Moves M3 until home switch is pressed."""
+    global M3_angle
+    while GPIO.input(SW_M3_HOME) == 1:
+        _m3_step(-1)
+    M3_angle = 0
+    return True
+
+def motor3_rotate_45():
+    """Rotates exactly 45° and updates angle counter."""
+    global M3_angle
+    for _ in range(512):
+        _m3_step(+1)
+    M3_angle = (M3_angle + 45) % 360
+
+def motor3_go_to_zero():
+    """Returns motor 3 to origin before Motor 1 moves."""
+    return motor3_home()
+
+# ============================================================
+# MOTOR 1 — SAFE OPEN / CLOSE (requires Motor 3 = 0°)
+# ============================================================
+
+def _require_motor3_zero():
+    if M3_angle != 0:
+        print("❌ Motor-3 not at origin — homing first")
+        motor3_go_to_zero()
+
+def motor1_forward_until_limit():   # CLOSE (DIR=HIGH)
+    _require_motor3_zero()
+    print("Motor-1 forward until SW2 close limit...")
+    while GPIO.input(SW2) == 1:
+        ser.write(b"M1F\n")
+        time.sleep(0.002)
+    print("Reached CLOSE limit (SW2).")
+
+def motor1_backward_until_limit():  # OPEN (DIR=LOW)
+    _require_motor3_zero()
+    print("Motor-1 backward until SW1 open limit...")
+    while GPIO.input(SW1) == 1:
+        ser.write(b"M1B\n")
+        time.sleep(0.002)
+    print("Reached OPEN limit (SW1).")
+
+# ============================================================
+# MOTOR 2 ALIGN BUTTON
+# ============================================================
+
+def motor2_align_sample():
+    """Press GUI button → Motor 2 homes to SW3 and then moves FULL_TRAVEL_STEPS."""
+    print("Aligning sample...")
+    motor2_home_to_limit()
+    motor2_move_steps(-1, 6895)
+    print("Sample aligned.")
