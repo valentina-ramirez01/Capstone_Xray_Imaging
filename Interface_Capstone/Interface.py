@@ -23,8 +23,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGroupBox, QToolButton, QStatusBar, QFileDialog,
-    QMessageBox, QInputDialog
+    QStatusBar, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
@@ -35,9 +34,7 @@ from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier import gpio_estop
 
-# ---------------------------------------------------------------
 # Stepper Motor imports
-# ---------------------------------------------------------------
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
     motor1_backward_until_switch1,
@@ -47,17 +44,16 @@ from xavier.stepper_Motor import (
     motor3_home
 )
 
-# ---------------------------------------------------------------
-# Serial for Motor 1 (Arduino)
-# ---------------------------------------------------------------
+# Serial link for Motor 1 (Arduino)
 ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 
-# ---------------------------------------------------------------
-# PiCamera2 backend
-# ---------------------------------------------------------------
+# Camera backend
 from xavier.camera_picam2 import Picamera2
 
 
+# ============================================================
+# CAMERA BACKEND
+# ============================================================
 class PiCamBackend:
     def __init__(self, preview_size=(1280,720), still_size=(1920,1080)):
         self.preview_size = preview_size
@@ -90,8 +86,7 @@ class PiCamBackend:
 
     def _switch(self, mode):
         self._ensure()
-        if mode == self._mode:
-            return
+        if mode == self._mode: return
         cfg = self.preview_cfg if mode == "preview" else self.still_cfg
         try:
             self.cam.switch_mode(cfg)
@@ -105,34 +100,17 @@ class PiCamBackend:
 
     def grab_gray(self):
         self._ensure()
-        if self._mode != "preview":
-            self._switch("preview")
+        if self._mode != "preview": self._switch("preview")
         frame = self.cam.capture_array("main")
-        try:
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        except:
-            return frame
+        try: return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        except: return frame
 
     def grab_bgr(self):
         self._ensure()
-        if self._mode != "preview":
-            self._switch("preview")
+        if self._mode != "preview": self._switch("preview")
         frame = self.cam.capture_array("main")
-        try:
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        except:
-            return frame
-
-    def capture_still_bgr(self):
-        self._ensure()
-        self._switch("still")
-        img = self.cam.capture_array("main")
-        try:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        except:
-            pass
-        self._switch("preview")
-        return img
+        try: return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        except: return frame
 
     def capture_xray_fixed(self):
         self._ensure()
@@ -156,7 +134,6 @@ class PiCamBackend:
 
         time.sleep(0.3)
         time.sleep(3.0 + 0.4)
-
         frame = self.cam.capture_array("main")
 
         self.cam.stop()
@@ -176,13 +153,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280,720)
 
+        # LED + Safety Logic
         self.leds = LedPanel()
-        self.green_state = False
+        self.armed = False   # Green LED = Armed
 
+        # Camera backend
         self.backend = PiCamBackend()
         self.backend.start()
         self.preview_on = False
 
+        # Widgets
         self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
         self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -279,9 +259,12 @@ class MainWindow(QMainWindow):
         self.update_leds(amber=True)
         motor2_home_to_limit3()
         motor2_move_full_up()
-        self.green_state = True
+
+        # ----- ARM SYSTEM -----
+        self.armed = True
         self.update_leds(green=True)
-        self.alarm.setText("ALIGN COMPLETE — READY")
+
+        self.alarm.setText("ALIGN COMPLETE — SYSTEM ARMED (GREEN)")
 
     def on_rotate45(self):
         self.alarm.setText("ROTATING 45°…")
@@ -294,37 +277,50 @@ class MainWindow(QMainWindow):
         self.alarm.setText("HOME COMPLETE")
 
     # ============================================================
-    # LED PANEL
+    # LED CONTROL
     # ============================================================
     def update_leds(self, *, amber=False, green=False, blue=False):
         self.leds.write(self.leds.amber, amber)
-        if blue:
-            self.leds.write(self.leds.green, False)
-            self.leds.write(self.leds.blue, True)
-        else:
-            self.leds.write(self.leds.blue, False)
-            self.leds.write(self.leds.green, green)
+        self.leds.write(self.leds.green, green)
+        self.leds.write(self.leds.blue, blue)
 
     # ============================================================
-    # XRAY PHOTO
+    # XRAY LOGIC (LED + HV + ARMING)
     # ============================================================
     def on_xray(self):
+        # ---- SAFETY CHECK ----
+        if not self.armed:
+            QMessageBox.warning(self, "Not Armed",
+                "System is NOT armed.\nAlign sample first to arm (Green ON).")
+            return
+
+        # ---- Activate HV ----
         self.alarm.setText("XRAY — HV ON")
-        self.update_leds(blue=True)
+
+        # Green OFF, Blue ON
+        self.update_leds(green=False, blue=True)
+        self.armed = False  # temporarily unarmed during HV
 
         hv_on()
         time.sleep(0.5)
+
         img = self.backend.capture_xray_fixed()
+
         time.sleep(0.5)
         hv_off()
 
+        # ---- Restore ARMING after HV ----
+        self.update_leds(blue=False, green=True)
+        self.armed = True
+
+        # Save image
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
         cv2.imwrite(filename, img)
 
+        # Display image
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = disp.shape[:2]
-
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
@@ -333,11 +329,10 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
-        self.update_leds(green=self.green_state)
-        self.alarm.setText("XRAY COMPLETE")
+        self.alarm.setText("XRAY COMPLETE — SYSTEM ARMED (GREEN)")
 
     # ============================================================
-    # SHOW LAST IMAGE
+    # SHOW LAST PHOTO
     # ============================================================
     def on_show_last(self):
         if self.preview_on:
@@ -358,12 +353,11 @@ class MainWindow(QMainWindow):
         last_file = files[-1]
         img = cv2.imread(last_file)
         if img is None:
-            QMessageBox.warning(self, "Error", "Could not load last image.")
+            QMessageBox.warning(self, "Error", "Could not load last X-ray image.")
             return
 
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = disp.shape[:2]
-
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
@@ -372,10 +366,10 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
-        self.alarm.setText(f"Showing Last: {last_file}")
+        self.alarm.setText(f"Showing Last X-ray: {last_file}")
 
     # ============================================================
-    # LIVE PREVIEW
+    # PREVIEW
     # ============================================================
     def on_preview(self):
         if not self.preview_on:
@@ -394,8 +388,7 @@ class MainWindow(QMainWindow):
         self.alarm.setText("STOPPED")
 
     def update_frame(self):
-        if not self.preview_on:
-            return
+        if not self.preview_on: return
         gray = self.backend.grab_gray()
         disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         h,w = disp.shape[:2]
@@ -419,7 +412,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self,"Export",str(e))
 
-    # ⭐ FIXED VERSION — LOADS ALL IMAGES (jpg/jpeg/png)
     def on_gallery(self):
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
 
