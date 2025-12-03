@@ -199,7 +199,6 @@ class MainWindow(QMainWindow):
         self.btn_rotate = QPushButton("Rotate 45°")
         self.btn_home3 = QPushButton("Home Rotation")
 
-
         # Camera/HV buttons
         self.btn_preview = QPushButton("Preview")
         self.btn_stop    = QPushButton("STOP")
@@ -247,7 +246,6 @@ class MainWindow(QMainWindow):
         self.btn_rotate.clicked.connect(self.on_rotate45)
         self.btn_home3.clicked.connect(self.on_home3)
 
-
         self.btn_preview.clicked.connect(self.on_preview)
         self.btn_stop.clicked.connect(self.on_stop)
         self.btn_export.clicked.connect(self.on_export)
@@ -278,7 +276,6 @@ class MainWindow(QMainWindow):
         self.alarm.setText("OPENING…")
         self.update_leds(amber=True)
         motor1_backward_until_switch1()
-        #self.update_leds()   # amber off (but green stays based on state)
         self.alarm.setText("OPEN COMPLETE")
 
     def on_close(self):
@@ -311,14 +308,14 @@ class MainWindow(QMainWindow):
         motor3_home()
         self.alarm.setText("HOME COMPLETE")
 
-
     # ============================================================
     # LED MANAGEMENT
     # ============================================================
     def update_leds(self, *, amber=False, green=False, blue=False):
+        # AMBER behaviour unchanged
         self.leds.write(self.leds.amber, amber)
 
-
+        # BLUE vs GREEN behaviour unchanged:
         if blue:
             # blue ON → green OFF
             self.leds.write(self.leds.green, False)
@@ -337,10 +334,10 @@ class MainWindow(QMainWindow):
         hv_on()                   # TURN HV ON
         time.sleep(0.5)           # Pre-exposure warmup
         img = self.backend.capture_xray_fixed()
-        time.sleep(0.5)           #Read out time
+        time.sleep(0.5)           # Read out time
         hv_off()
 
-         # File save
+        # File save
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
         cv2.imwrite(filename, img)
@@ -357,14 +354,12 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
-
         self.update_leds(green=self.green_state)
         self.alarm.setText("XRAY COMPLETE")
 
     # ============================================================
     # SHOW LAST PHOTO TAKEN
     # ============================================================
-        
     def on_show_last(self):
         # No preview running — otherwise, it will overwrite constantly
         if self.preview_on:
@@ -448,10 +443,20 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self,"Export",str(e))
 
     def on_gallery(self):
-        paths = sorted(Path("captures").glob("capture_*.png"))
+        """
+        Open OpenCV-based gallery using images in the SAME captures folder
+        used by XRAY save, supporting .jpg, .png, and edited_*.png.
+        """
+        base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
+        jpgs    = list(base_dir.glob("capture_*.jpg"))
+        pngs    = list(base_dir.glob("capture_*.png"))
+        edited  = list(base_dir.glob("edited_*.png"))
+
+        paths = sorted(jpgs + pngs + edited)
         if not paths:
-            QMessageBox.information(self,"Gallery","No images found.")
+            QMessageBox.information(self, "Gallery", "No images found in captures folder.")
             return
+
         Gallery([str(p) for p in paths]).run()
 
     # ============================================================
