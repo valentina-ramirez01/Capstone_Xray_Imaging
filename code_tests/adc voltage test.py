@@ -1,7 +1,6 @@
-# adc_reader.py
-import smbus
-import math
 import time
+import math
+import smbus
 
 # ======================================================
 # ADS1115 REGISTER MAP
@@ -11,11 +10,10 @@ REG_CONVERSION = 0x00
 REG_CONFIG     = 0x01
 
 # ======================================================
-# ADS1115 CONFIG — USING ±6.144V RANGE FOR 3.3V INPUTS
-# (from your adc voltage test.py)
+# ADS1115 CONFIG (YOUR WORKING SETTINGS)
 # ======================================================
 MUX_AIN0       = 0x4000   # Read A0
-PGA_6_144V     = 0x0000   # Correct for 3.3V logic
+PGA_6_144V     = 0x0000   # Input range ±6.144V (correct for 3.3V logic)
 MODE_CONT      = 0x0000
 DR_860SPS      = 0x00E0
 COMP_DISABLE   = 0x0003
@@ -30,26 +28,19 @@ CONFIG_WORD = (
     COMP_DISABLE
 )
 
-# Voltage per bit (LSB)
 ADC_FS = 6.144
-LSB = ADC_FS / 32767.0
+LSB = ADC_FS / 32767.0     # LSB size
 
-# Remove ADC noise below 10mV
-NOISE_THRESHOLD = 0.01
+NOISE_THRESHOLD = 0.01      # Filter 0–10 mV noise
 
 # ======================================================
-# HV FORMULA CONSTANT — from your V0→HV formula
+# HV CONSTANT (from your formula)
 # ======================================================
-K = 2 * math.sqrt(2) * 400 * 12     # ≈ 13576.45
-
-
-def compute_voltage(V0: float) -> float:
-    """Fast HV formula."""
-    return (2 * V0 + 0.7) * K
+K = 2 * math.sqrt(2) * 400 * 12   # ≈ 13,576.45
 
 
 # ======================================================
-# INIT I2C BUS
+# INIT I2C
 # ======================================================
 bus = smbus.SMBus(1)
 bus.write_word_data(
@@ -59,50 +50,29 @@ bus.write_word_data(
 )
 
 
-# ======================================================
-# Core ADC Function
-# ======================================================
-def read_v0() -> float:
-    """Reads ADS1115 A0 input and returns scaled voltage."""
-    raw_swap = bus.read_word_data(ADS1115_ADDR, REG_CONVERSION)
 
-    # Swap byte order
-    raw = ((raw_swap & 0xFF) << 8) | (raw_swap >> 8)
+# ======================================================
+# MAIN LOOP
+# ======================================================
+while True:
+    # Read ADC (swap byte order)
+    raw_swapped = bus.read_word_data(ADS1115_ADDR, REG_CONVERSION)
+    raw = ((raw_swapped & 0xFF) << 8) | (raw_swapped >> 8)
 
-    # Convert to signed
+    # Convert to signed integer
     if raw > 0x7FFF:
         raw -= 0x10000
 
+    # Convert to volts
     V0 = raw * LSB
 
-    # Remove noise
+    # Noise filter
     if abs(V0) < NOISE_THRESHOLD:
         V0 = 0.0
 
-    return V0
+    # Apply HV multiplier formula
+    HV = (2 * V0 + 0.7) * K
 
+    print(f"V0 = {V0:6.4f} V | HV Multiplier Output = {HV:9.2f} V")
 
-# ======================================================
-# Main public API for your interface: hv_status()
-# ======================================================
-LOW_LIMIT  = 1.485
-HIGH_LIMIT = 1.815
-
-def hv_status():
-    """
-    Returns:
-        ("LOW", hv_voltage)
-        ("OK", hv_voltage)
-        ("HIGH", hv_voltage)
-    where hv_voltage is the computed HV_OUT using your formula.
-    """
-    V0 = read_v0()
-    HV = compute_voltage(V0)
-
-    if V0 < LOW_LIMIT:
-        return ("LOW", HV)
-
-    if V0 > HIGH_LIMIT:
-        return ("HIGH", HV)
-
-    return ("OK", HV)
+    time.sleep(0.2)
