@@ -32,8 +32,7 @@ from xavier.io_utils import capture_and_save_frame
 from xavier.gallery import Gallery, ImageEditorWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
-from xavier import gpio_estop
-from xavier.adc_reader import hv_status  # <-- ADC IMPORT ADDED
+from xavier.adc_reader import read_hv_voltage, hv_status_ok
 
 # Motors
 from xavier.stepper_Motor import (
@@ -147,14 +146,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280,720)
 
+        # LEDs
         self.leds = LedPanel()
         self.preview_on = False
         self.armed = False
 
-        # Setup SW2 = GPIO18
+        # SW2 = GPIO18 for tray closed alignment
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
+        # Camera backend
         self.backend = PiCamBackend()
         self.backend.start()
 
@@ -166,7 +167,7 @@ class MainWindow(QMainWindow):
 
         self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Buttons (ALIGN REMOVED)
+        # Buttons
         self.btn_open   = QPushButton("OPEN")
         self.btn_close  = QPushButton("CLOSE")
         self.btn_rotate = QPushButton("Rotate 45°")
@@ -224,10 +225,11 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
 
-        self.estop_timer = QTimer(self)
-        self.estop_timer.setInterval(200)
-        self.estop_timer.timeout.connect(self.check_estop)
-        self.estop_timer.start()
+        # NEW: ADC safety check timer
+        self.adc_timer = QTimer(self)
+        self.adc_timer.setInterval(300)  # 3x per second
+        self.adc_timer.timeout.connect(self.check_adc_safety)
+        self.adc_timer.start()
 
         # Alignment detection timer
         self.align_timer = QTimer(self)
@@ -235,17 +237,8 @@ class MainWindow(QMainWindow):
         self.align_timer.timeout.connect(self.check_alignment)
         self.align_timer.start()
 
-        # HV AUTO RESET TIMER -------------------------------
-        self.hvreset_timer = QTimer(self)
-        self.hvreset_timer.setInterval(400)
-        self.hvreset_timer.timeout.connect(self.check_hv_reset)
-        self.hvreset_timer.start()
-        # -----------------------------------------------------
-
         self.all_leds_off()
 
-        # Start E-STOP monitor thread
-        gpio_estop.start_monitor(self.on_estop_fault_gui)
 
 
     # ============================================================
@@ -256,6 +249,7 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.amber, False)
         self.leds.write(self.leds.green, False)
         self.leds.write(self.leds.blue, False)
+
 
     # ============================================================
     # SIMPLE BANNER
@@ -277,13 +271,53 @@ class MainWindow(QMainWindow):
         self.alarm.setStyleSheet(st)
         self.alarm.setText(text)
 
+
     # ============================================================
-    # ALIGNMENT USING SW2
+    # ADC SAFETY INTERLOCK
+    # ============================================================
+    def check_adc_safety(self):
+        hv = read_hv_voltage()
+        ok, msg = hv_status_ok(hv)
+
+        if not ok:
+            # UNSAFE HV — Lock the system
+            hv_off()
+            self.all_leds_off()
+            self.leds.write(self.leds.red, True)
+            self.banner(f"HV FAULT — {msg}", color="red")
+
+            # Disable all controls
+            for b in (
+                self.btn_open, self.btn_close,
+                self.btn_rotate, self.btn_home3,
+                self.btn_xray, self.btn_preview,
+                self.btn_stop, self.btn_export,
+                self.btn_gallery, self.btn_show_last,
+                self.btn_editor
+            ):
+                b.setEnabled(False)
+
+            return
+
+        # HV is safe → Enable system (alignment decides state)
+        for b in (
+            self.btn_open, self.btn_close,
+            self.btn_rotate, self.btn_home3,
+            self.btn_xray, self.btn_preview,
+            self.btn_stop, self.btn_export,
+            self.btn_gallery, self.btn_show_last,
+            self.btn_editor
+        ):
+            b.setEnabled(True)
+
+
+    # ============================================================
+    # ALIGNMENT USING SW2 (GPIO18)
     # ============================================================
     def check_alignment(self):
         sw2 = GPIO.input(18)
 
-        if sw2 == 0:  # switch pressed = aligned
+        if sw2 == 0:  # pressed = aligned
             self.armed = True
             self.all_leds_off()
             self.leds.write(self.leds.green, True)
@@ -294,55 +328,6 @@ class MainWindow(QMainWindow):
             self.leds.write(self.leds.amber, True)
             self.banner("Tray Open — Insert Sample", color="yellow")
 
-    # ============================================================
-    # HV AUTO RESET
-    # ============================================================
-    def check_hv_reset(self):
-        # ignore reset if firing x-ray
-        if self.leds.blue:
-            return
-
-        hv_state, hv_val = hv_status()
-
-        if hv_state == "OK" and self.armed:
-            self.all_leds_off()
-            self.leds.write(self.leds.green, True)
-            self.banner("Sample Aligned — Ready for X-Ray", color="green")
-
-    # ============================================================
-    # EMERGENCY STOP CALLBACK
-    # ============================================================
-    def on_estop_fault_gui(self):
-        hv_off()
-        self.preview_on = False
-        self.timer.stop()
-        self.backend.stop()
-
-        self.all_leds_off()
-        self.leds.write(self.leds.red, True)
-
-        self.banner("EMERGENCY STOP — SYSTEM SHUTDOWN", color="red")
-        QApplication.processEvents()
-
-        for b in (
-            self.btn_open, self.btn_close,
-            self.btn_rotate, self.btn_home3,
-            self.btn_xray, self.btn_preview,
-            self.btn_stop, self.btn_export,
-            self.btn_gallery, self.btn_show_last,
-            self.btn_editor
-        ):
-            b.setEnabled(False)
-
-    # ============================================================
-    # E-STOP POLLING
-    # ============================================================
-    def check_estop(self):
-        if gpio_estop.faulted():
-            self.all_leds_off()
-            self.leds.write(self.leds.red, True)
-            self.banner("FAULT — E-STOP PRESSED", color="red")
-            return
 
     # ============================================================
     # OPEN TRAY
@@ -356,6 +341,7 @@ class MainWindow(QMainWindow):
 
         self.banner("Tray Open — Insert Sample", color="yellow")
 
+
     # ============================================================
     # CLOSE TRAY
     # ============================================================
@@ -364,7 +350,8 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.amber, True)
 
         motor1_forward_until_switch2()
-        # No banner — SW2 controls alignment banner
+        # Alignment handled by SW2 timer
+
 
     # ============================================================
     # ROTATION
@@ -375,12 +362,12 @@ class MainWindow(QMainWindow):
     def on_home3(self):
         motor3_home()
 
+
     # ============================================================
-    # XRAY — WITH HV FAULT BLOCKING + AUTO RESET SUPPORT
+    # XRAY
     # ============================================================
     def on_xray(self):
 
-        # 1) Alignment safety
         if not self.armed:
             QMessageBox.warning(
                 self, "Not Aligned",
@@ -389,34 +376,7 @@ class MainWindow(QMainWindow):
             self.banner("XRAY BLOCKED — TRAY NOT CLOSED", color="orange")
             return
 
-        # 2) HV safety check
-        hv_state, hv_val = hv_status()
-
-        if hv_state == "HIGH":
-            hv_off()
-            self.all_leds_off()
-            self.leds.write(self.leds.red, True)
-            self.banner(f"FAULT — HV OVERVOLTAGE ({hv_val:.2f} V)", color="red")
-
-            QMessageBox.critical(
-                self, "HV Fault",
-                f"⚠️ X-RAY BLOCKED\n\nHigh Voltage TOO HIGH.\nMeasured: {hv_val:.2f} V"
-            )
-            return
-
-        if hv_state == "LOW":
-            hv_off()
-            self.all_leds_off()
-            self.leds.write(self.leds.red, True)
-            self.banner(f"FAULT — HV UNDERVOLTAGE ({hv_val:.2f} V)", color="red")
-
-            QMessageBox.warning(
-                self, "HV Too Low",
-                f"⚠️ X-RAY BLOCKED\n\nHigh Voltage TOO LOW.\nMeasured: {hv_val:.2f} V"
-            )
-            return
-
-        # 3) HV OK → proceed
+        # X-ray allowed
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
@@ -429,7 +389,6 @@ class MainWindow(QMainWindow):
 
         hv_off()
 
-        # 4) Restore state
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
@@ -446,6 +405,7 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
+
 
     # ============================================================
     # SHOW LAST IMAGE
@@ -466,7 +426,7 @@ class MainWindow(QMainWindow):
         img = cv2.imread(files[-1])
         disp = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
         h,w=disp.shape[:2]
-        qimg=QImage(disp.data,w,h,3*w,3*w, QImage.Format.Format_RGB888)
+        qimg=QImage(disp.data,w,h,3*w, QImage.Format.Format_RGB888)
         px=QPixmap.fromImage(qimg).scaled(
             self.view.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -475,6 +435,7 @@ class MainWindow(QMainWindow):
         self.view.setPixmap(px)
 
         self.banner("Showing Last X-Ray", color="yellow")
+
 
     # ============================================================
     # PREVIEW / STOP
@@ -494,6 +455,7 @@ class MainWindow(QMainWindow):
         self.all_leds_off()
         self.banner("STOPPED", color="red")
 
+
     # ============================================================
     # PREVIEW FRAME UPDATE
     # ============================================================
@@ -511,6 +473,7 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
+
 
     # ============================================================
     # EXPORT / GALLERY / EDITOR
@@ -549,7 +512,7 @@ class MainWindow(QMainWindow):
         self.banner("Editing Image", color="yellow")
 
     # ============================================================
-    # CLEANUP ON EXIT
+    # CLEANUP
     # ============================================================
     def closeEvent(self,event):
         try: hv_off()
@@ -560,10 +523,8 @@ class MainWindow(QMainWindow):
 
         self.all_leds_off()
 
-        try: gpio_estop.stop_monitor()
-        except: pass
-
         super().closeEvent(event)
+
 
 
 
