@@ -27,10 +27,8 @@ from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier.adc_reader import read_hv_voltage, hv_status_ok
 
-# HV watchdog
 from xavier.hv_watchdog import start_watchdog, stop_watchdog, heartbeat
 
-# Motors
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
     motor1_backward_until_switch1,
@@ -140,12 +138,16 @@ class MainWindow(QMainWindow):
         self.resize(1280,720)
 
         self.leds = LedPanel()
+
+        # STATES
         self.preview_on = False
         self.armed = False
-        self.hv_fault_active = False    # <--- IMPORTANT SAFETY FLAG
+        self.hv_fault_active = False
+        self.has_closed_once = False      # CLOSE executed?
+        self.has_started = False          # User interacted?
 
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # SW2
+        GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # SW2 detect
 
         self.backend = PiCamBackend()
         self.backend.start()
@@ -153,7 +155,7 @@ class MainWindow(QMainWindow):
         # -----------------------------------------------
         # UI
         # -----------------------------------------------
-        self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.alarm = QLabel("System Ready", alignment=Qt.AlignmentFlag.AlignCenter)
         self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
 
         self.view = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
@@ -229,6 +231,7 @@ class MainWindow(QMainWindow):
         # -----------------------------------------------
         start_watchdog()
 
+        # STARTUP STATE: no LEDs
         self.all_leds_off()
 
 
@@ -257,7 +260,7 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # ADC SAFETY — OVERRIDES EVERYTHING
+    # ADC SAFETY (OVERRIDES EVERYTHING)
     # ============================================================
     def check_adc_safety(self):
         heartbeat()
@@ -266,16 +269,13 @@ class MainWindow(QMainWindow):
         ok, msg = hv_status_ok(hv)
 
         if not ok:
-            # --- SET FAULT MODE ---
             self.hv_fault_active = True
-
             hv_off()
+
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
-
             self.banner(f"HV FAULT — {msg}", color="red")
 
-            # DISABLE CONTROLS
             for b in (
                 self.btn_open, self.btn_close,
                 self.btn_rotate, self.btn_home3,
@@ -288,10 +288,9 @@ class MainWindow(QMainWindow):
 
             return
 
-        # --- HV IS SAFE AGAIN ---
+        # HV SAFE AGAIN
         self.hv_fault_active = False
 
-        # Re-enable buttons
         for b in (
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
@@ -304,15 +303,29 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # ALIGNMENT (only runs when HV safe)
+    # ALIGNMENT — ONLY ACTIVE AFTER FIRST CLOSE
     # ============================================================
     def check_alignment(self):
         heartbeat()
 
-        # DO NOT OVERRIDE HV FAULT
         if self.hv_fault_active:
             return
 
+        # ON BOOT: NO LEDs
+        if not self.has_started:
+            self.all_leds_off()
+            self.banner("System Ready")
+            return
+
+        # Before CLOSE once: amber always
+        if not self.has_closed_once:
+            self.armed = False
+            self.all_leds_off()
+            self.leds.write(self.leds.amber, True)
+            self.banner("Tray Open — Insert Sample", color="yellow")
+            return
+
+        # Alignment phase
         sw2 = GPIO.input(18)
 
         if sw2 == 0:
@@ -324,7 +337,7 @@ class MainWindow(QMainWindow):
             self.armed = False
             self.all_leds_off()
             self.leds.write(self.leds.amber, True)
-            self.banner("Tray Open — Insert Sample", color="yellow")
+            self.banner("Tray Closing…", color="yellow")
 
 
     # ============================================================
@@ -333,6 +346,9 @@ class MainWindow(QMainWindow):
 
         if self.hv_fault_active:
             return
+
+        self.has_started = True
+        self.has_closed_once = False
 
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
@@ -350,10 +366,14 @@ class MainWindow(QMainWindow):
         if self.hv_fault_active:
             return
 
+        self.has_started = True
+
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
 
         motor1_forward_until_switch2()
+
+        self.has_closed_once = True
 
 
     # ============================================================
@@ -363,6 +383,7 @@ class MainWindow(QMainWindow):
             motor3_rotate_45()
 
 
+    # ============================================================
     def on_home3(self):
         heartbeat()
         if not self.hv_fault_active:
@@ -404,7 +425,7 @@ class MainWindow(QMainWindow):
         finally:
             hv_off()
 
-        # After safe shutdown:
+        # After safe shutdown
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
@@ -468,6 +489,7 @@ class MainWindow(QMainWindow):
             self.timer.stop()
 
 
+    # ============================================================
     def on_stop(self):
         heartbeat()
 
@@ -491,8 +513,8 @@ class MainWindow(QMainWindow):
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
 
@@ -509,6 +531,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self,"Export",str(e))
 
 
+    # ============================================================
     def on_gallery(self):
         heartbeat()
 
@@ -522,6 +545,7 @@ class MainWindow(QMainWindow):
         Gallery([str(p) for p in all_imgs]).run()
 
 
+    # ============================================================
     def on_editor(self):
         heartbeat()
 
@@ -541,13 +565,41 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
+    # EXIT CLEANUP
+    # ============================================================
     def closeEvent(self, event):
-        hv_off()
-        stop_watchdog()
+
+        print("[CLOSE] Safe shutdown…")
+
+        # STOP TIMERS FIRST (prevents accidental LED turn-on)
+        try: self.timer.stop()
+        except: pass
+
+        try: self.adc_timer.stop()
+        except: pass
+
+        try: self.align_timer.stop()
+        except: pass
+
+        # STOP HV
+        try: hv_off()
+        except: pass
+
+        # STOP CAMERA
         try: self.backend.stop()
         except: pass
 
-        self.all_leds_off()
+        # STOP WATCHDOG
+        try: stop_watchdog()
+        except: pass
+
+        # TURN OFF ALL LEDS AND RELEASE GPIO
+        try:
+            self.all_leds_off()
+            self.leds.cleanup()
+        except:
+            pass
+
         super().closeEvent(event)
 
 
