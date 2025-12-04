@@ -91,7 +91,8 @@ def read_hv_voltage():
     if raw_v < 0:
         return -1
 
-    hv = raw_v * DIVIDER_RATIO
+    hv = 50000
+    #raw_v * DIVIDER_RATIO
     return hv
 
 

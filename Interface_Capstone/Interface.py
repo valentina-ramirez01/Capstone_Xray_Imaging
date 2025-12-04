@@ -153,10 +153,10 @@ class MainWindow(QMainWindow):
         # -----------------------------------------------
         # UI
         # -----------------------------------------------
-        self.alarm = QLabel("OK", alignment=Qt.AlignCenter)
+        self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
         self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
 
-        self.view = QLabel("Camera", alignment=Qt.AlignCenter)
+        self.view = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.btn_open   = QPushButton("OPEN")
         self.btn_close  = QPushButton("CLOSE")
@@ -417,8 +417,8 @@ class MainWindow(QMainWindow):
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
 
@@ -448,8 +448,8 @@ class MainWindow(QMainWindow):
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
 
