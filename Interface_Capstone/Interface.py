@@ -38,8 +38,6 @@ from xavier import gpio_estop
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
     motor1_backward_until_switch1,
-    motor2_home_to_limit3,
-    motor2_move_full_up,
     motor3_rotate_45,
     motor3_home
 )
@@ -49,7 +47,6 @@ ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 
 # Camera backend
 from xavier.camera_picam2 import Picamera2
-
 
 
 # ============================================================
@@ -67,7 +64,7 @@ class PiCamBackend:
         self.preview_cfg = self.cam.create_preview_configuration(
             main={"size": self.preview_size}
         )
-        self.still_cfg   = self.cam.create_still_configuration(
+        self.still_cfg = self.cam.create_still_configuration(
             main={"size": self.still_size}
         )
         self.cam.configure(self.preview_cfg)
@@ -146,16 +143,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # ---------------- DEBUG INSERTION ----------------
-        print("[EDEBUG] GPIO26 mode at startup:", GPIO.gpio_function(26))
-        # -------------------------------------------------
-
         self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280,720)
 
         self.leds = LedPanel()
-        self.armed = False
         self.preview_on = False
+        self.armed = False
+
+        # Setup SW2 = GPIO18
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
         self.backend = PiCamBackend()
         self.backend.start()
@@ -168,10 +165,9 @@ class MainWindow(QMainWindow):
 
         self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Buttons
+        # Buttons (ALIGN REMOVED)
         self.btn_open   = QPushButton("OPEN")
         self.btn_close  = QPushButton("CLOSE")
-        self.btn_align  = QPushButton("ALIGN SAMPLE")
         self.btn_rotate = QPushButton("Rotate 45°")
         self.btn_home3  = QPushButton("Home Rotation")
         self.btn_preview = QPushButton("Preview")
@@ -191,9 +187,9 @@ class MainWindow(QMainWindow):
             self.btn_preview, self.btn_stop,
             self.btn_export, self.btn_xray,
             self.btn_open, self.btn_close,
-            self.btn_align, self.btn_rotate,
-            self.btn_home3, self.btn_gallery,
-            self.btn_show_last, self.btn_editor
+            self.btn_rotate, self.btn_home3,
+            self.btn_gallery, self.btn_show_last,
+            self.btn_editor
         ):
             left.addWidget(b)
         left.addStretch()
@@ -212,7 +208,6 @@ class MainWindow(QMainWindow):
         # Button connections
         self.btn_open.clicked.connect(self.on_open)
         self.btn_close.clicked.connect(self.on_close)
-        self.btn_align.clicked.connect(self.on_align)
         self.btn_rotate.clicked.connect(self.on_rotate45)
         self.btn_home3.clicked.connect(self.on_home3)
         self.btn_preview.clicked.connect(self.on_preview)
@@ -233,33 +228,31 @@ class MainWindow(QMainWindow):
         self.estop_timer.timeout.connect(self.check_estop)
         self.estop_timer.start()
 
+        # Alignment detection timer
+        self.align_timer = QTimer(self)
+        self.align_timer.setInterval(100)
+        self.align_timer.timeout.connect(self.check_alignment)
+        self.align_timer.start()
+
         self.all_leds_off()
 
-        # ---------------- DEBUG INSERTION ----------------
-        print("[EDEBUG] Starting E-STOP monitor…")
+        # Start E-STOP monitor thread
         gpio_estop.start_monitor(self.on_estop_fault_gui)
-        print("[EDEBUG] E-STOP monitor started.")
-        # -------------------------------------------------
-
 
 
     # ============================================================
     # LED UTILITIES
     # ============================================================
     def all_leds_off(self):
-        print("[EDEBUG] all_leds_off() called")
         self.leds.write(self.leds.red, False)
         self.leds.write(self.leds.amber, False)
         self.leds.write(self.leds.green, False)
         self.leds.write(self.leds.blue, False)
 
-
     # ============================================================
     # SIMPLE BANNER
     # ============================================================
     def banner(self, text, color=None):
-        print(f"[EDEBUG] banner() text='{text}', color={color}")
-
         if color == "green":
             st = "background-color:#4CAF50;color:white;font-size:26px;font-weight:bold;padding:8px;"
         elif color == "blue":
@@ -276,75 +269,61 @@ class MainWindow(QMainWindow):
         self.alarm.setStyleSheet(st)
         self.alarm.setText(text)
 
+    # ============================================================
+    # ALIGNMENT USING SW2
+    # ============================================================
+    def check_alignment(self):
+        sw2 = GPIO.input(18)
 
+        if sw2 == 0:  # switch pressed = aligned
+            self.armed = True
+            self.all_leds_off()
+            self.leds.write(self.leds.green, True)
+            self.banner("Sample Aligned — Ready for X-Ray", color="green")
+        else:
+            self.armed = False
+            self.all_leds_off()
+            self.leds.write(self.leds.amber, True)
+            self.banner("Tray Open — Insert Sample", color="yellow")
 
     # ============================================================
     # EMERGENCY STOP CALLBACK
     # ============================================================
     def on_estop_fault_gui(self):
-        print("\n>>> [EDEBUG] E-STOP CALLBACK CALLED <<<")
+        hv_off()
+        self.preview_on = False
+        self.timer.stop()
+        self.backend.stop()
 
-        # Kill HV
-        try:
-            hv_off()
-            print("[EDEBUG] HV OFF OK")
-        except Exception as e:
-            print("[EDEBUG] HV OFF ERROR:", e)
-
-        # Stop camera & timers
-        try:
-            self.preview_on = False
-            self.timer.stop()
-            self.backend.stop()
-            print("[EDEBUG] Camera preview stopped")
-        except Exception as e:
-            print("[EDEBUG] Camera stop ERROR:", e)
-
-        # LEDs: red
-        print("[EDEBUG] Setting RED LED")
         self.all_leds_off()
         self.leds.write(self.leds.red, True)
 
-        # GUI banner
-        print("[EDEBUG] Updating banner…")
         self.banner("EMERGENCY STOP — SYSTEM SHUTDOWN", color="red")
         QApplication.processEvents()
 
-        # Disable all buttons
-        print("[EDEBUG] Disabling buttons…")
         for b in (
-            self.btn_open, self.btn_close, self.btn_align,
-            self.btn_rotate, self.btn_home3, self.btn_xray,
-            self.btn_preview, self.btn_stop, self.btn_export,
-            self.btn_gallery, self.btn_show_last, self.btn_editor
+            self.btn_open, self.btn_close,
+            self.btn_rotate, self.btn_home3,
+            self.btn_xray, self.btn_preview,
+            self.btn_stop, self.btn_export,
+            self.btn_gallery, self.btn_show_last,
+            self.btn_editor
         ):
             b.setEnabled(False)
 
-        print(">>> [EDEBUG] CALLBACK END <<<\n")
-
-
-
-
     # ============================================================
-    # E-STOP POLLING FOR GUI STATE
+    # E-STOP POLLING
     # ============================================================
     def check_estop(self):
-        latch = gpio_estop.faulted()
-        print(f"[EDEBUG] check_estop(): latch={latch}")
-
-        if latch:
-            print("[EDEBUG] GUI sees FAULT → RED LED + banner")
+        if gpio_estop.faulted():
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
             self.banner("FAULT — E-STOP PRESSED", color="red")
             return
 
-
-
     # ============================================================
-    # (ALL OTHER FUNCTIONS UNMODIFIED BELOW HERE)
+    # OPEN TRAY
     # ============================================================
-
     def on_open(self):
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
@@ -352,52 +331,43 @@ class MainWindow(QMainWindow):
         motor3_home()
         motor1_backward_until_switch1()
 
-        self.banner("Tray Opened — Place Sample", color="yellow")
+        self.banner("Tray Open — Insert Sample", color="yellow")
 
-
+    # ============================================================
+    # CLOSE TRAY
+    # ============================================================
     def on_close(self):
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
 
         motor1_forward_until_switch2()
+        # No banner — SW2 controls alignment banner
 
-        self.banner("Tray Closed", color="yellow")
-
-
-    def on_align(self):
-        self.all_leds_off()
-        self.leds.write(self.leds.amber, True)
-
-        motor2_home_to_limit3()
-        motor2_move_full_up()
-
-        self.all_leds_off()
-        self.leds.write(self.leds.green, True)
-        self.armed = True
-
-        self.banner("Alignment Complete — Ready for X-Ray Picture", color="green")
-
-
+    # ============================================================
+    # ROTATION
+    # ============================================================
     def on_rotate45(self):
         motor3_rotate_45()
 
     def on_home3(self):
         motor3_home()
 
-
+    # ============================================================
+    # XRAY
+    # ============================================================
     def on_xray(self):
 
         if not self.armed:
-            QMessageBox.warning(self,"Not Armed",
-                "System is NOT armed.\nAlign sample first.")
-            self.banner("XRAY BLOCKED — NOT ARMED", color="orange")
+            QMessageBox.warning(
+                self, "Not Aligned",
+                "Tray is not fully closed.\nPress tray fully until aligned."
+            )
+            self.banner("XRAY BLOCKED — TRAY NOT CLOSED", color="orange")
             return
 
-        # BLUE LED on (HV state)
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
-
         QApplication.processEvents()
 
         hv_on()
@@ -407,10 +377,9 @@ class MainWindow(QMainWindow):
 
         hv_off()
 
-        # Restore green after HV
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
-        self.banner("Alignment Complete — Ready for X-Ray Picture", color="green")
+        self.banner("Sample Aligned — Ready for X-Ray", color="green")
 
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         cv2.imwrite(filename, img)
@@ -425,7 +394,9 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
-
+    # ============================================================
+    # SHOW LAST IMAGE
+    # ============================================================
     def on_show_last(self):
         if self.preview_on:
             QMessageBox.warning(self,"Preview Active","Turn OFF preview first.")
@@ -440,10 +411,6 @@ class MainWindow(QMainWindow):
             return
 
         img = cv2.imread(files[-1])
-        if img is None:
-            QMessageBox.warning(self,"Error","Cannot load last image.")
-            return
-
         disp = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
         h,w=disp.shape[:2]
         qimg=QImage(disp.data,w,h,3*w,QImage.Format.Format_RGB888)
@@ -456,7 +423,9 @@ class MainWindow(QMainWindow):
 
         self.banner("Showing Last X-Ray", color="yellow")
 
-
+    # ============================================================
+    # PREVIEW / STOP
+    # ============================================================
     def on_preview(self):
         if not self.preview_on:
             self.preview_on=True
@@ -465,7 +434,6 @@ class MainWindow(QMainWindow):
             self.preview_on=False
             self.timer.stop()
 
-
     def on_stop(self):
         self.preview_on=False
         self.timer.stop()
@@ -473,7 +441,9 @@ class MainWindow(QMainWindow):
         self.all_leds_off()
         self.banner("STOPPED", color="red")
 
-
+    # ============================================================
+    # PREVIEW FRAME UPDATE
+    # ============================================================
     def update_frame(self):
         if not self.preview_on:
             return
@@ -489,7 +459,9 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
-
+    # ============================================================
+    # EXPORT / GALLERY / EDITOR
+    # ============================================================
     def on_export(self):
         try:
             frame = self.backend.grab_bgr()
@@ -497,7 +469,6 @@ class MainWindow(QMainWindow):
             self.status.showMessage(f"Saved {filename}")
         except Exception as e:
             QMessageBox.critical(self,"Export",str(e))
-
 
     def on_gallery(self):
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
@@ -508,7 +479,6 @@ class MainWindow(QMainWindow):
             return
 
         Gallery([str(p) for p in all_imgs]).run()
-
 
     def on_editor(self):
         import glob
@@ -525,9 +495,10 @@ class MainWindow(QMainWindow):
 
         self.banner("Editing Image", color="yellow")
 
-
+    # ============================================================
+    # CLEANUP ON EXIT
+    # ============================================================
     def closeEvent(self,event):
-
         try: hv_off()
         except: pass
 
