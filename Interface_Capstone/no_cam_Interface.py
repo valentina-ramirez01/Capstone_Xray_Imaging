@@ -41,7 +41,7 @@ from xavier.camera_picam2 import Picamera2
 
 
 # ============================================================
-# CAMERA BACKEND (unchanged)
+# CAMERA BACKEND
 # ============================================================
 class PiCamBackend:
     def __init__(self, preview_size=(1280,720), still_size=(1920,1080)):
@@ -145,13 +145,12 @@ class MainWindow(QMainWindow):
         self.hv_fault_active = False
         self.has_closed_once = False
         self.has_started = False
+        self.hv_active = False       # <---- NEW: ADC runs ONLY when HV ON
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-        # -------------------------------------------------
-        # CAMERA INIT - CAMERA OPTIONAL MODE
-        # -------------------------------------------------
+        # CAMERA OPTIONAL MODE
         self.camera_ok = True
         self.backend = None
 
@@ -261,18 +260,25 @@ class MainWindow(QMainWindow):
         self.alarm.setStyleSheet(st)
         self.alarm.setText(text)
 
+
     # ============================================================
-    # ADC SAFETY
+    # ADC SAFETY — ONLY RUNS WHEN HV ACTIVE
     # ============================================================
     def check_adc_safety(self):
         heartbeat()
+
+        # Only check ADC during HV ON
+        if not self.hv_active:
+            return
 
         hv = read_hv_voltage()
         ok, msg = hv_status_ok(hv)
 
         if not ok:
-            self.hv_fault_active = True
             hv_off()
+            self.hv_active = False
+            self.hv_fault_active = True
+
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
             self.banner(f"HV FAULT — {msg}", color="red")
@@ -285,21 +291,14 @@ class MainWindow(QMainWindow):
                 self.btn_show_last, self.btn_editor
             ):
                 b.setEnabled(False)
+
             return
 
-        self.hv_fault_active = False
+        # If HV OK, do nothing (continue exposure)
 
-        for b in (
-            self.btn_open, self.btn_close,
-            self.btn_rotate, self.btn_home3,
-            self.btn_xray, self.btn_preview,
-            self.btn_gallery, self.btn_show_last,
-            self.btn_editor
-        ):
-            b.setEnabled(True)
 
     # ============================================================
-    # ALIGNMENT LOGIC
+    # ALIGNMENT
     # ============================================================
     def check_alignment(self):
         heartbeat()
@@ -332,6 +331,7 @@ class MainWindow(QMainWindow):
             self.leds.write(self.leds.amber, True)
             self.banner("Tray Closing…", color="yellow")
 
+
     # ============================================================
     # OPEN
     # ============================================================
@@ -352,6 +352,7 @@ class MainWindow(QMainWindow):
 
         self.banner("Tray Open — Insert Sample", color="yellow")
 
+
     # ============================================================
     # CLOSE
     # ============================================================
@@ -370,11 +371,13 @@ class MainWindow(QMainWindow):
 
         self.has_closed_once = True
 
+
     # ============================================================
     def on_rotate45(self):
         heartbeat()
         if not self.hv_fault_active:
             motor3_rotate_45()
+
 
     # ============================================================
     def on_home3(self):
@@ -382,8 +385,9 @@ class MainWindow(QMainWindow):
         if not self.hv_fault_active:
             motor3_home()
 
+
     # ============================================================
-    # XRAY (CAMERA OPTIONAL)
+    # XRAY (HV CONTROL + ADC SAFETY)
     # ============================================================
     def on_xray(self):
         heartbeat()
@@ -407,6 +411,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
+            self.hv_active = True     # <--- Enable ADC safety
             hv_on()
             time.sleep(0.4)
 
@@ -414,6 +419,7 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             hv_off()
+            self.hv_active = False
             QMessageBox.critical(self,"Camera Error",
                                  "Camera failed — HV turned OFF for safety.")
             print("XRAY ERROR:", e)
@@ -421,6 +427,7 @@ class MainWindow(QMainWindow):
 
         finally:
             hv_off()
+            self.hv_active = False     # <--- DISABLE ADC SAFETY AFTER HV
 
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
@@ -428,6 +435,7 @@ class MainWindow(QMainWindow):
 
         filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         cv2.imwrite(filename, img)
+
 
     # ============================================================
     def on_show_last(self):
@@ -461,6 +469,7 @@ class MainWindow(QMainWindow):
 
         self.banner("Showing Last X-Ray", color="yellow")
 
+
     # ============================================================
     # PREVIEW (CAMERA OPTIONAL)
     # ============================================================
@@ -481,6 +490,7 @@ class MainWindow(QMainWindow):
             self.preview_on=False
             self.timer.stop()
 
+
     # ============================================================
     def on_stop(self):
         heartbeat()
@@ -495,8 +505,9 @@ class MainWindow(QMainWindow):
         self.all_leds_off()
         self.banner("STOPPED", color="red")
 
+
     # ============================================================
-    # UPDATE FRAME (CAMERA OPTIONAL)
+    # FRAME UPDATE (CAMERA OPTIONAL)
     # ============================================================
     def update_frame(self):
         heartbeat()
@@ -521,6 +532,7 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
+
     # ============================================================
     # EXPORT (CAMERA OPTIONAL)
     # ============================================================
@@ -539,6 +551,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self,"Export Error",str(e))
 
+
     # ============================================================
     def on_gallery(self):
         heartbeat()
@@ -551,6 +564,7 @@ class MainWindow(QMainWindow):
             return
 
         Gallery([str(p) for p in all_imgs]).run()
+
 
     # ============================================================
     def on_editor(self):
@@ -569,6 +583,7 @@ class MainWindow(QMainWindow):
         self.editor_window.show()
 
         self.banner("Editing Image", color="yellow")
+
 
     # ============================================================
     def closeEvent(self, event):
