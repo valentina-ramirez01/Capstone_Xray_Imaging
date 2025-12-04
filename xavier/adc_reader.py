@@ -1,6 +1,4 @@
-
 import smbus
-import math
 import time
 
 # ======================================================
@@ -11,15 +9,14 @@ REG_CONVERSION = 0x00
 REG_CONFIG     = 0x01
 
 # ======================================================
-# ADS1115 CONFIG — USING ±6.144V RANGE FOR 3.3V INPUTS
-# (from your adc voltage test.py)
+# ADS1115 CONFIG — YOUR EXACT SETTINGS
 # ======================================================
 MUX_AIN0       = 0x4000   # Read A0
-PGA_6_144V     = 0x0000   # Correct for 3.3V logic
-MODE_CONT      = 0x0000
-DR_860SPS      = 0x00E0
-COMP_DISABLE   = 0x0003
-START_OS       = 0x8000
+PGA_6_144V     = 0x0000   # ±6.144V range
+MODE_CONT      = 0x0000   # Continuous mode
+DR_860SPS      = 0x00E0   # Fastest sample rate
+COMP_DISABLE   = 0x0003   # Disable comparator
+START_OS       = 0x8000   # Start conversion
 
 CONFIG_WORD = (
     START_OS |
@@ -30,79 +27,90 @@ CONFIG_WORD = (
     COMP_DISABLE
 )
 
-# Voltage per bit (LSB)
-ADC_FS = 6.144
-LSB = ADC_FS / 32767.0
-
-# Remove ADC noise below 10mV
-NOISE_THRESHOLD = 0.01
+# ======================================================
+# ADC LSB VALUE (your configuration)
+# ======================================================
+ADC_FS = 6.144          # ±6.144V full-scale
+LSB = ADC_FS / 32767.0  # ADS1115 output step size
 
 # ======================================================
-# HV FORMULA CONSTANT — from your V0→HV formula
+# HV DIVIDER & SAFE WINDOW (customize if needed)
 # ======================================================
-K = 2 * math.sqrt(2) * 400 * 12     # ≈ 13576.45
+DIVIDER_RATIO = 50000 / 5.0   # 50kV → 5V at ADC (10,000 V per volt)
 
-
-def compute_voltage(V0: float) -> float:
-    """Fast HV formula."""
-    return (2 * V0 + 0.7) * K
+HV_MIN_SAFE = 35_000   # 35 kV minimum
+HV_MAX_SAFE = 55_000   # 55 kV maximum
 
 
 # ======================================================
-# INIT I2C BUS
+# INTERNAL: READ RAW VOLTAGE FROM ADC (A0)
 # ======================================================
-bus = smbus.SMBus(1)
-bus.write_word_data(
-    ADS1115_ADDR,
-    REG_CONFIG,
-    ((CONFIG_WORD & 0xFF) << 8) | (CONFIG_WORD >> 8)
-)
+_bus = smbus.SMBus(1)
 
-
-# ======================================================
-# Core ADC Function
-# ======================================================
-def read_v0() -> float:
-    """Reads ADS1115 A0 input and returns scaled voltage."""
-    raw_swap = bus.read_word_data(ADS1115_ADDR, REG_CONVERSION)
-
-    # Swap byte order
-    raw = ((raw_swap & 0xFF) << 8) | (raw_swap >> 8)
-
-    # Convert to signed
-    if raw > 0x7FFF:
-        raw -= 0x10000
-
-    V0 = raw * LSB
-
-    # Remove noise
-    if abs(V0) < NOISE_THRESHOLD:
-        V0 = 0.0
-
-    return V0
-
-
-# ======================================================
-# Main public API for your interface: hv_status()
-# ======================================================
-LOW_LIMIT  = 1.485
-HIGH_LIMIT = 1.815
-
-def hv_status():
+def _read_adc_voltage():
     """
+    Reads ADS1115 A0 using your config word.
     Returns:
-        ("LOW", hv_voltage)
-        ("OK", hv_voltage)
-        ("HIGH", hv_voltage)
-    where hv_voltage is the computed HV_OUT using your formula.
+        float (raw voltage at ADC pin)
     """
-    V0 = read_v0()
-    HV = compute_voltage(V0)
+    try:
+        # Write configuration
+        _bus.write_word_data(
+            ADS1115_ADDR,
+            REG_CONFIG,
+            ((CONFIG_WORD >> 8) & 0xFF) | ((CONFIG_WORD & 0xFF) << 8)
+        )
 
-    if V0 < LOW_LIMIT:
-        return ("LOW", HV)
+        time.sleep(0.003)  # settle time for continuous mode
 
-    if V0 > HIGH_LIMIT:
-        return ("HIGH", HV)
+        # Read conversion register (swap byte order!)
+        raw = _bus.read_word_data(ADS1115_ADDR, REG_CONVERSION)
+        raw = ((raw & 0xFF) << 8) | (raw >> 8)
 
-    return ("OK", HV)
+        # Convert to voltage
+        voltage = raw * LSB
+
+        return voltage
+
+    except Exception as e:
+        print(f"[ADC ERROR] {e}")
+        return -1.0
+
+
+# ======================================================
+# PUBLIC: READ HV IN VOLTS
+# ======================================================
+def read_hv_voltage():
+    """
+    Reads HV using your resistor divider.
+    Returns:
+        HV in volts (NOT kV)
+    """
+    raw_v = _read_adc_voltage()
+
+    if raw_v < 0:
+        return -1
+
+    hv = raw_v * DIVIDER_RATIO
+    return hv
+
+
+# ======================================================
+# PUBLIC: HV SAFETY LOGIC
+# ======================================================
+def hv_status_ok(hv):
+    """
+    Validates HV range.
+    Returns:
+        (bool, message)
+    """
+    if hv < 0:
+        return (False, "ADC READ ERROR")
+
+    if hv < HV_MIN_SAFE:
+        return (False, f"HV TOO LOW ({hv/1000:.2f} kV)")
+
+    if hv > HV_MAX_SAFE:
+        return (False, f"HV TOO HIGH ({hv/1000:.2f} kV)")
+
+    return (True, "OK")
