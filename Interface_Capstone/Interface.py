@@ -166,7 +166,6 @@ class MainWindow(QMainWindow):
         self.btn_home3  = QPushButton("Home Rotation")
         self.btn_preview = QPushButton("Preview")
         self.btn_stop    = QPushButton("STOP")
-        self.btn_export  = QPushButton("Export Last")
         self.btn_xray    = QPushButton("XRAY Photo")
         self.btn_gallery = QPushButton("Gallery")
         self.btn_editor  = QPushButton("Editor")
@@ -178,7 +177,7 @@ class MainWindow(QMainWindow):
 
         for b in (
             self.btn_preview, self.btn_stop,
-            self.btn_export, self.btn_xray,
+            self.btn_xray,
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
             self.btn_gallery, self.btn_show_last,
@@ -205,7 +204,7 @@ class MainWindow(QMainWindow):
         self.btn_home3.clicked.connect(self.on_home3)
         self.btn_preview.clicked.connect(self.on_preview)
         self.btn_stop.clicked.connect(self.on_stop)
-        self.btn_export.clicked.connect(self.on_export)
+        
         self.btn_xray.clicked.connect(self.on_xray)
         self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_show_last.clicked.connect(self.on_show_last)
@@ -295,7 +294,7 @@ class MainWindow(QMainWindow):
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
             self.btn_xray, self.btn_preview,
-            self.btn_stop, self.btn_export,
+            
             self.btn_gallery, self.btn_show_last,
             self.btn_editor
         ):
