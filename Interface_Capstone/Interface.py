@@ -2,18 +2,11 @@ import sys
 import time
 from pathlib import Path
 
-# ---------------------------------------------------------------
-# Ensure project root
-# ---------------------------------------------------------------
 _here = Path(__file__).resolve()
 project_root = _here.parent.parent
-
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# ---------------------------------------------------------------
-# Imports
-# ---------------------------------------------------------------
 import numpy as np
 import cv2
 import serial
@@ -34,6 +27,9 @@ from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier.adc_reader import read_hv_voltage, hv_status_ok
 
+# HV watchdog
+from xavier.hv_watchdog import start_watchdog, stop_watchdog, heartbeat
+
 # Motors
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
@@ -42,10 +38,7 @@ from xavier.stepper_Motor import (
     motor3_home
 )
 
-# Serial for Motor1
 ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
-
-# Camera backend
 from xavier.camera_picam2 import Picamera2
 
 
@@ -146,28 +139,25 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IC X-ray Viewer")
         self.resize(1280,720)
 
-        # LEDs
         self.leds = LedPanel()
         self.preview_on = False
         self.armed = False
+        self.hv_fault_active = False    # <--- IMPORTANT SAFETY FLAG
 
-        # SW2 = GPIO18 for tray closed alignment
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # SW2
 
-        # Camera backend
         self.backend = PiCamBackend()
         self.backend.start()
 
-        # ------------------------------------------------------------
-        # UI ELEMENTS
-        # ------------------------------------------------------------
-        self.alarm = QLabel("OK", alignment=Qt.AlignmentFlag.AlignCenter)
+        # -----------------------------------------------
+        # UI
+        # -----------------------------------------------
+        self.alarm = QLabel("OK", alignment=Qt.AlignCenter)
         self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
 
-        self.view  = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.view = QLabel("Camera", alignment=Qt.AlignCenter)
 
-        # Buttons
         self.btn_open   = QPushButton("OPEN")
         self.btn_close  = QPushButton("CLOSE")
         self.btn_rotate = QPushButton("Rotate 45°")
@@ -180,7 +170,6 @@ class MainWindow(QMainWindow):
         self.btn_editor  = QPushButton("Editor")
         self.btn_show_last = QPushButton("Show Last X-ray")
 
-        # Layout
         central = QWidget()
         root = QHBoxLayout(central)
         left = QVBoxLayout()
@@ -207,7 +196,7 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-        # Button connections
+        # Buttons
         self.btn_open.clicked.connect(self.on_open)
         self.btn_close.clicked.connect(self.on_close)
         self.btn_rotate.clicked.connect(self.on_rotate45)
@@ -225,24 +214,24 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
 
-        # NEW: ADC safety check timer
         self.adc_timer = QTimer(self)
-        self.adc_timer.setInterval(300)  # 3x per second
+        self.adc_timer.setInterval(300)
         self.adc_timer.timeout.connect(self.check_adc_safety)
         self.adc_timer.start()
 
-        # Alignment detection timer
         self.align_timer = QTimer(self)
         self.align_timer.setInterval(100)
         self.align_timer.timeout.connect(self.check_alignment)
         self.align_timer.start()
 
+        # -----------------------------------------------
+        # WATCHDOG START
+        # -----------------------------------------------
+        start_watchdog()
+
         self.all_leds_off()
 
 
-
-    # ============================================================
-    # LED UTILITIES
     # ============================================================
     def all_leds_off(self):
         self.leds.write(self.leds.red, False)
@@ -251,8 +240,6 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.blue, False)
 
 
-    # ============================================================
-    # SIMPLE BANNER
     # ============================================================
     def banner(self, text, color=None):
         if color == "green":
@@ -263,30 +250,32 @@ class MainWindow(QMainWindow):
             st = "background-color:#FFEB3B;color:black;font-size:26px;font-weight:bold;padding:8px;"
         elif color == "red":
             st = "background-color:#F44336;color:white;font-size:26px;font-weight:bold;padding:8px;"
-        elif color == "orange":
-            st = "background-color:#FF9800;color:white;font-size:26px;font-weight:bold;padding:8px;"
         else:
             st = "font-size:26px;font-weight:bold;padding:8px;"
-
         self.alarm.setStyleSheet(st)
         self.alarm.setText(text)
 
 
     # ============================================================
-    # ADC SAFETY INTERLOCK
+    # ADC SAFETY — OVERRIDES EVERYTHING
     # ============================================================
     def check_adc_safety(self):
+        heartbeat()
+
         hv = read_hv_voltage()
         ok, msg = hv_status_ok(hv)
 
         if not ok:
-            # UNSAFE HV — Lock the system
+            # --- SET FAULT MODE ---
+            self.hv_fault_active = True
+
             hv_off()
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
+
             self.banner(f"HV FAULT — {msg}", color="red")
 
-            # Disable all controls
+            # DISABLE CONTROLS
             for b in (
                 self.btn_open, self.btn_close,
                 self.btn_rotate, self.btn_home3,
@@ -299,7 +288,10 @@ class MainWindow(QMainWindow):
 
             return
 
-        # HV is safe → Enable system (alignment decides state)
+        # --- HV IS SAFE AGAIN ---
+        self.hv_fault_active = False
+
+        # Re-enable buttons
         for b in (
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
@@ -312,12 +304,18 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # ALIGNMENT USING SW2 (GPIO18)
+    # ALIGNMENT (only runs when HV safe)
     # ============================================================
     def check_alignment(self):
+        heartbeat()
+
+        # DO NOT OVERRIDE HV FAULT
+        if self.hv_fault_active:
+            return
+
         sw2 = GPIO.input(18)
 
-        if sw2 == 0:  # pressed = aligned
+        if sw2 == 0:
             self.armed = True
             self.all_leds_off()
             self.leds.write(self.leds.green, True)
@@ -330,9 +328,12 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # OPEN TRAY
-    # ============================================================
     def on_open(self):
+        heartbeat()
+
+        if self.hv_fault_active:
+            return
+
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
 
@@ -343,52 +344,67 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # CLOSE TRAY
-    # ============================================================
     def on_close(self):
+        heartbeat()
+
+        if self.hv_fault_active:
+            return
+
         self.all_leds_off()
         self.leds.write(self.leds.amber, True)
 
         motor1_forward_until_switch2()
-        # Alignment handled by SW2 timer
 
 
-    # ============================================================
-    # ROTATION
     # ============================================================
     def on_rotate45(self):
-        motor3_rotate_45()
+        heartbeat()
+        if not self.hv_fault_active:
+            motor3_rotate_45()
+
 
     def on_home3(self):
-        motor3_home()
+        heartbeat()
+        if not self.hv_fault_active:
+            motor3_home()
 
 
     # ============================================================
-    # XRAY
+    # XRAY — WATCHDOG PROTECTED
     # ============================================================
     def on_xray(self):
+        heartbeat()
 
-        if not self.armed:
-            QMessageBox.warning(
-                self, "Not Aligned",
-                "Tray is not fully closed.\nPress tray fully until aligned."
-            )
-            self.banner("XRAY BLOCKED — TRAY NOT CLOSED", color="orange")
+        if self.hv_fault_active:
+            QMessageBox.warning(self,"HV Fault","Unsafe HV level detected.")
             return
 
-        # X-ray allowed
+        if not self.armed:
+            QMessageBox.warning(self,"Not Aligned","Tray must be fully closed.")
+            return
+
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
         QApplication.processEvents()
 
-        hv_on()
-        time.sleep(0.4)
+        try:
+            hv_on()
+            time.sleep(0.4)
 
-        img = self.backend.capture_xray_fixed()
+            img = self.backend.capture_xray_fixed()
 
-        hv_off()
+        except Exception as e:
+            hv_off()
+            QMessageBox.critical(self,"Error",
+                                 "Camera failure — HV turned OFF for safety.")
+            print("XRAY ERROR:", e)
+            return
 
+        finally:
+            hv_off()
+
+        # After safe shutdown:
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
@@ -397,40 +413,43 @@ class MainWindow(QMainWindow):
         cv2.imwrite(filename, img)
 
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h,w = disp.shape[:2]
+        h, w = disp.shape[:2]
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
         )
         self.view.setPixmap(px)
 
 
     # ============================================================
-    # SHOW LAST IMAGE
-    # ============================================================
     def on_show_last(self):
+        heartbeat()
+
+        if self.hv_fault_active:
+            return
+
         if self.preview_on:
             QMessageBox.warning(self,"Preview Active","Turn OFF preview first.")
             return
 
         import glob
         base = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
-        files = sorted(glob.glob(base+"/*.jpg")+glob.glob(base+"/*.png"))
+        files = sorted(glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png"))
 
         if not files:
             QMessageBox.warning(self,"No Images","None found.")
             return
 
         img = cv2.imread(files[-1])
-        disp = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
-        h,w=disp.shape[:2]
-        qimg=QImage(disp.data,w,h,3*w, QImage.Format.Format_RGB888)
-        px=QPixmap.fromImage(qimg).scaled(
+        disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        h, w = disp.shape[:2]
+        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
+        px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
         )
         self.view.setPixmap(px)
 
@@ -438,9 +457,9 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # PREVIEW / STOP
-    # ============================================================
     def on_preview(self):
+        heartbeat()
+
         if not self.preview_on:
             self.preview_on=True
             self.timer.start()
@@ -448,7 +467,10 @@ class MainWindow(QMainWindow):
             self.preview_on=False
             self.timer.stop()
 
+
     def on_stop(self):
+        heartbeat()
+
         self.preview_on=False
         self.timer.stop()
         self.backend.stop()
@@ -457,9 +479,9 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # PREVIEW FRAME UPDATE
-    # ============================================================
     def update_frame(self):
+        heartbeat()
+
         if not self.preview_on:
             return
 
@@ -469,16 +491,16 @@ class MainWindow(QMainWindow):
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
         )
         self.view.setPixmap(px)
 
 
     # ============================================================
-    # EXPORT / GALLERY / EDITOR
-    # ============================================================
     def on_export(self):
+        heartbeat()
+
         try:
             frame = self.backend.grab_bgr()
             filename = capture_and_save_frame(frame, save_dir="captures")
@@ -486,7 +508,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self,"Export",str(e))
 
+
     def on_gallery(self):
+        heartbeat()
+
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
         all_imgs = sorted(list(base_dir.glob("*.jpg")) + list(base_dir.glob("*.png")))
 
@@ -496,35 +521,34 @@ class MainWindow(QMainWindow):
 
         Gallery([str(p) for p in all_imgs]).run()
 
+
     def on_editor(self):
+        heartbeat()
+
         import glob
         base="/home/xray_juanito/Capstone_Xray_Imaging/captures"
-        files=sorted(glob.glob(base+"/*.jpg")+glob.glob(base+"/*.png"))
+        files = sorted(glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png"))
 
         if not files:
             QMessageBox.warning(self,"No Images","None to edit.")
             return
 
-        last=files[-1]
-        self.editor_window=ImageEditorWindow(last)
+        last = files[-1]
+        self.editor_window = ImageEditorWindow(last)
         self.editor_window.show()
 
         self.banner("Editing Image", color="yellow")
 
-    # ============================================================
-    # CLEANUP
-    # ============================================================
-    def closeEvent(self,event):
-        try: hv_off()
-        except: pass
 
+    # ============================================================
+    def closeEvent(self, event):
+        hv_off()
+        stop_watchdog()
         try: self.backend.stop()
         except: pass
 
         self.all_leds_off()
-
         super().closeEvent(event)
-
 
 
 
@@ -535,5 +559,6 @@ def main():
     win.show()
     sys.exit(app.exec())
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     main()
