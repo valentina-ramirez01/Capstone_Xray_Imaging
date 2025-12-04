@@ -33,6 +33,7 @@ from xavier.gallery import Gallery, ImageEditorWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier import gpio_estop
+from xavier.adc_reader import hv_status  # <-- ADC IMPORT ADDED
 
 # Motors
 from xavier.stepper_Motor import (
@@ -234,6 +235,13 @@ class MainWindow(QMainWindow):
         self.align_timer.timeout.connect(self.check_alignment)
         self.align_timer.start()
 
+        # HV AUTO RESET TIMER -------------------------------
+        self.hvreset_timer = QTimer(self)
+        self.hvreset_timer.setInterval(400)
+        self.hvreset_timer.timeout.connect(self.check_hv_reset)
+        self.hvreset_timer.start()
+        # -----------------------------------------------------
+
         self.all_leds_off()
 
         # Start E-STOP monitor thread
@@ -285,6 +293,21 @@ class MainWindow(QMainWindow):
             self.all_leds_off()
             self.leds.write(self.leds.amber, True)
             self.banner("Tray Open — Insert Sample", color="yellow")
+
+    # ============================================================
+    # HV AUTO RESET
+    # ============================================================
+    def check_hv_reset(self):
+        # ignore reset if firing x-ray
+        if self.leds.blue:
+            return
+
+        hv_state, hv_val = hv_status()
+
+        if hv_state == "OK" and self.armed:
+            self.all_leds_off()
+            self.leds.write(self.leds.green, True)
+            self.banner("Sample Aligned — Ready for X-Ray", color="green")
 
     # ============================================================
     # EMERGENCY STOP CALLBACK
@@ -353,10 +376,11 @@ class MainWindow(QMainWindow):
         motor3_home()
 
     # ============================================================
-    # XRAY
+    # XRAY — WITH HV FAULT BLOCKING + AUTO RESET SUPPORT
     # ============================================================
     def on_xray(self):
 
+        # 1) Alignment safety
         if not self.armed:
             QMessageBox.warning(
                 self, "Not Aligned",
@@ -365,6 +389,34 @@ class MainWindow(QMainWindow):
             self.banner("XRAY BLOCKED — TRAY NOT CLOSED", color="orange")
             return
 
+        # 2) HV safety check
+        hv_state, hv_val = hv_status()
+
+        if hv_state == "HIGH":
+            hv_off()
+            self.all_leds_off()
+            self.leds.write(self.leds.red, True)
+            self.banner(f"FAULT — HV OVERVOLTAGE ({hv_val:.2f} V)", color="red")
+
+            QMessageBox.critical(
+                self, "HV Fault",
+                f"⚠️ X-RAY BLOCKED\n\nHigh Voltage TOO HIGH.\nMeasured: {hv_val:.2f} V"
+            )
+            return
+
+        if hv_state == "LOW":
+            hv_off()
+            self.all_leds_off()
+            self.leds.write(self.leds.red, True)
+            self.banner(f"FAULT — HV UNDERVOLTAGE ({hv_val:.2f} V)", color="red")
+
+            QMessageBox.warning(
+                self, "HV Too Low",
+                f"⚠️ X-RAY BLOCKED\n\nHigh Voltage TOO LOW.\nMeasured: {hv_val:.2f} V"
+            )
+            return
+
+        # 3) HV OK → proceed
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
@@ -377,6 +429,7 @@ class MainWindow(QMainWindow):
 
         hv_off()
 
+        # 4) Restore state
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
@@ -413,7 +466,7 @@ class MainWindow(QMainWindow):
         img = cv2.imread(files[-1])
         disp = cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
         h,w=disp.shape[:2]
-        qimg=QImage(disp.data,w,h,3*w,QImage.Format.Format_RGB888)
+        qimg=QImage(disp.data,w,h,3*w,3*w, QImage.Format.Format_RGB888)
         px=QPixmap.fromImage(qimg).scaled(
             self.view.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
