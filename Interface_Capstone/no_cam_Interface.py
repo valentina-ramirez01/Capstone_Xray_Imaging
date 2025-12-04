@@ -3,9 +3,9 @@ import time
 from pathlib import Path
 
 _here = Path(__file__).resolve()
-project_root = _here.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+_project_root = _here.parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
 import numpy as np
 import cv2
@@ -76,24 +76,20 @@ class PiCamBackend:
     def grab_gray(self):
         if self.cam is None:
             raise RuntimeError("Picamera2 not started")
-
         if self._mode != "preview":
             self.cam.switch_mode(self.preview_cfg)
             self._mode = "preview"
             time.sleep(0.05)
-
         frame = self.cam.capture_array("main")
         return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
     def grab_bgr(self):
         if self.cam is None:
             raise RuntimeError("Picamera2 not started")
-
         if self._mode != "preview":
             self.cam.switch_mode(self.preview_cfg)
             self._mode = "preview"
             time.sleep(0.05)
-
         frame = self.cam.capture_array("main")
         return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
@@ -145,12 +141,12 @@ class MainWindow(QMainWindow):
         self.hv_fault_active = False
         self.has_closed_once = False
         self.has_started = False
-        self.hv_active = False       # <---- NEW: ADC runs ONLY when HV ON
+        self.hv_active = False     # <---- ADC only on when HV ON
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-        # CAMERA OPTIONAL MODE
+        # Optional camera mode
         self.camera_ok = True
         self.backend = None
 
@@ -162,7 +158,7 @@ class MainWindow(QMainWindow):
             self.camera_ok = False
 
         # -------------------------------------------------
-        # UI BUILD
+        # UI
         # -------------------------------------------------
         self.alarm = QLabel("System Ready", alignment=Qt.AlignmentFlag.AlignCenter)
         self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
@@ -185,9 +181,7 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
 
         for b in (
-            self.btn_preview,
-            self.btn_stop,
-            self.btn_xray,
+            self.btn_preview, self.btn_stop, self.btn_xray,
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
             self.btn_gallery, self.btn_show_last,
@@ -199,6 +193,7 @@ class MainWindow(QMainWindow):
         center = QVBoxLayout()
         center.addWidget(self.alarm)
         center.addWidget(self.view, 1)
+
         root.addLayout(left)
         root.addLayout(center, 1)
         self.setCentralWidget(central)
@@ -244,6 +239,7 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.green, False)
         self.leds.write(self.leds.blue, False)
 
+
     # ============================================================
     def banner(self, text, color=None):
         if color == "green":
@@ -256,18 +252,16 @@ class MainWindow(QMainWindow):
             st = "background-color:#F44336;color:white;font-size:26px;font-weight:bold;padding:8px;"
         else:
             st = "font-size:26px;font-weight:bold;padding:8px;"
-
         self.alarm.setStyleSheet(st)
         self.alarm.setText(text)
 
 
     # ============================================================
-    # ADC SAFETY — ONLY RUNS WHEN HV ACTIVE
+    # ADC SAFETY — ONLY WHEN HV ACTIVE
     # ============================================================
     def check_adc_safety(self):
         heartbeat()
 
-        # Only check ADC during HV ON
         if not self.hv_active:
             return
 
@@ -293,8 +287,6 @@ class MainWindow(QMainWindow):
                 b.setEnabled(False)
 
             return
-
-        # If HV OK, do nothing (continue exposure)
 
 
     # ============================================================
@@ -368,7 +360,6 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.amber, True)
 
         motor1_forward_until_switch2()
-
         self.has_closed_once = True
 
 
@@ -387,54 +378,58 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # XRAY (HV CONTROL + ADC SAFETY)
+    # XRAY (HV even without camera)
     # ============================================================
     def on_xray(self):
         heartbeat()
 
-        if not self.camera_ok:
-            QMessageBox.critical(self, "Camera Missing",
-                                 "Cannot take X-ray because no camera is detected.")
-            return
-
         if self.hv_fault_active:
-            QMessageBox.warning(self,"HV Fault","Unsafe HV level detected.")
+            QMessageBox.warning(self, "HV Fault", "Unsafe HV level detected.")
             return
 
         if not self.armed:
-            QMessageBox.warning(self,"Not Aligned","Tray must be fully closed.")
+            QMessageBox.warning(self, "Not Aligned", "Tray must be fully closed.")
             return
 
+        # GUI feedback
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
-        self.banner("HV On — Taking X-Ray Picture", color="blue")
+        self.banner("HV On — Taking X-Ray", color="blue")
         QApplication.processEvents()
 
         try:
-            self.hv_active = True     # <--- Enable ADC safety
+            # Enable HV safety window
+            self.hv_active = True
             hv_on()
             time.sleep(0.4)
 
-            img = self.backend.capture_xray_fixed()
+            # CAMERA OPTIONAL MODE
+            if self.camera_ok:
+                img = self.backend.capture_xray_fixed()
+            else:
+                img = None
 
         except Exception as e:
             hv_off()
             self.hv_active = False
-            QMessageBox.critical(self,"Camera Error",
-                                 "Camera failed — HV turned OFF for safety.")
+            QMessageBox.critical(self, "Error",
+                                 "Camera/HV error — HV turned OFF safely.")
             print("XRAY ERROR:", e)
             return
 
         finally:
             hv_off()
-            self.hv_active = False     # <--- DISABLE ADC SAFETY AFTER HV
+            self.hv_active = False
 
+        # After HV cycle
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
 
-        filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        cv2.imwrite(filename, img)
+        # Save only if camera exists
+        if img is not None:
+            filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+            cv2.imwrite(filename, img)
 
 
     # ============================================================
@@ -471,8 +466,6 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # PREVIEW (CAMERA OPTIONAL)
-    # ============================================================
     def on_preview(self):
         heartbeat()
 
@@ -507,8 +500,6 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # FRAME UPDATE (CAMERA OPTIONAL)
-    # ============================================================
     def update_frame(self):
         heartbeat()
 
@@ -533,8 +524,6 @@ class MainWindow(QMainWindow):
         self.view.setPixmap(px)
 
 
-    # ============================================================
-    # EXPORT (CAMERA OPTIONAL)
     # ============================================================
     def on_export(self):
         heartbeat()
@@ -574,7 +563,7 @@ class MainWindow(QMainWindow):
         base="/home/xray_juanito/Capstone_Xray_Imaging/captures"
         files = sorted(glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png"))
 
-        if not files:
+        if not	files:
             QMessageBox.warning(self,"No Images","None to edit.")
             return
 
