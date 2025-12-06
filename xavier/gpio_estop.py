@@ -8,7 +8,7 @@ import RPi.GPIO as GPIO
 # ============================================================
 
 # E-STOP pin (updated to GPIO26)
-PIN_ESTOP = 26
+PIN_ESTOP = 22
 
 # Debounce time
 DEBOUNCE_S = 0.02
