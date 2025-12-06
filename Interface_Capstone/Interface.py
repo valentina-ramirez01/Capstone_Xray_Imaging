@@ -143,8 +143,11 @@ class MainWindow(QMainWindow):
         self.preview_on = False
         self.armed = False
         self.hv_fault_active = False
-        self.has_closed_once = False      # CLOSE executed?
-        self.has_started = False          # User interacted?
+        self.has_closed_once = False
+        self.has_started = False
+
+        # NEW STATE: ADC runs only when HV is actually ON
+        self.hv_active = False
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # SW2 detect
@@ -204,7 +207,6 @@ class MainWindow(QMainWindow):
         self.btn_home3.clicked.connect(self.on_home3)
         self.btn_preview.clicked.connect(self.on_preview)
         self.btn_stop.clicked.connect(self.on_stop)
-        
         self.btn_xray.clicked.connect(self.on_xray)
         self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_show_last.clicked.connect(self.on_show_last)
@@ -259,10 +261,16 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # ADC SAFETY (OVERRIDES EVERYTHING)
+    # ADC SAFETY (ONLY ACTIVE WHEN HV IS ON)
     # ============================================================
     def check_adc_safety(self):
         heartbeat()
+
+        # -----------------------------------------------------------
+        # SKIP ALL ADC SAFETY IF HV IS NOT ON
+        # -----------------------------------------------------------
+        if not self.hv_active:
+            return
 
         hv = read_hv_voltage()
         ok, msg = hv_status_ok(hv)
@@ -270,6 +278,7 @@ class MainWindow(QMainWindow):
         if not ok:
             self.hv_fault_active = True
             hv_off()
+            self.hv_active = False
 
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
@@ -279,7 +288,7 @@ class MainWindow(QMainWindow):
                 self.btn_open, self.btn_close,
                 self.btn_rotate, self.btn_home3,
                 self.btn_xray, self.btn_preview,
-                self.btn_stop, self.btn_export,
+                self.btn_stop,
                 self.btn_gallery, self.btn_show_last,
                 self.btn_editor
             ):
@@ -294,7 +303,6 @@ class MainWindow(QMainWindow):
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
             self.btn_xray, self.btn_preview,
-            
             self.btn_gallery, self.btn_show_last,
             self.btn_editor
         ):
@@ -310,13 +318,11 @@ class MainWindow(QMainWindow):
         if self.hv_fault_active:
             return
 
-        # ON BOOT: NO LEDs
         if not self.has_started:
             self.all_leds_off()
             self.banner("System Ready")
             return
 
-        # Before CLOSE once: amber always
         if not self.has_closed_once:
             self.armed = False
             self.all_leds_off()
@@ -409,6 +415,10 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
+            # ---------------------------------------------------
+            # HV ACTIVATION — ADC MUST NOW MONITOR SAFETY
+            # ---------------------------------------------------
+            self.hv_active = True
             hv_on()
             time.sleep(0.4)
 
@@ -416,6 +426,7 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             hv_off()
+            self.hv_active = False
             QMessageBox.critical(self,"Error",
                                  "Camera failure — HV turned OFF for safety.")
             print("XRAY ERROR:", e)
@@ -423,6 +434,7 @@ class MainWindow(QMainWindow):
 
         finally:
             hv_off()
+            self.hv_active = False
 
         # After safe shutdown
         self.all_leds_off()
@@ -570,7 +582,6 @@ class MainWindow(QMainWindow):
 
         print("[CLOSE] Safe shutdown…")
 
-        # STOP TIMERS FIRST (prevents accidental LED turn-on)
         try: self.timer.stop()
         except: pass
 
@@ -580,19 +591,15 @@ class MainWindow(QMainWindow):
         try: self.align_timer.stop()
         except: pass
 
-        # STOP HV
         try: hv_off()
         except: pass
 
-        # STOP CAMERA
         try: self.backend.stop()
         except: pass
 
-        # STOP WATCHDOG
         try: stop_watchdog()
         except: pass
 
-        # TURN OFF ALL LEDS AND RELEASE GPIO
         try:
             self.all_leds_off()
             self.leds.cleanup()
