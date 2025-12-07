@@ -1,0 +1,72 @@
+# ================================================================
+# HOW TO AUTOSTART YOUR PyQt GUI ON RASPBERRY PI (FULL GUIDE)
+# ================================================================
+
+# ------------------------------------------------
+# 1. ENSURE YOUR GUI FILE IS EXECUTABLE
+# ------------------------------------------------
+# Replace with the path to your Interface.py:
+chmod +x /home/xray_juanito/Capstone_Xray_Imaging/Interface_Capstone/Interface.py
+
+
+# ------------------------------------------------
+# 2. CREATE THE AUTOSTART DIRECTORY IF IT DOES NOT EXIST
+# ------------------------------------------------
+mkdir -p ~/.config/autostart
+
+
+# ------------------------------------------------
+# 3. CREATE A DESKTOP LAUNCHER FOR THE GUI
+# ------------------------------------------------
+nano ~/.config/autostart/xray_interface.desktop
+
+
+# ------------------------------------------------
+# 4. PASTE THE FOLLOWING INTO xray_interface.desktop
+# ------------------------------------------------
+[Desktop Entry]
+Type=Application
+Name=XRay Interface
+Comment=Auto-start the IC X-Ray Viewer GUI
+Exec=/usr/bin/python3 /home/xray_juanito/Capstone_Xray_Imaging/Interface_Capstone/Interface.py
+WorkingDirectory=/home/xray_juanito/Capstone_Xray_Imaging/Interface_Capstone
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5
+
+
+# ------------------------------------------------
+# 5. SAVE AND EXIT THE FILE
+# ------------------------------------------------
+# CTRL + X
+# Y
+# ENTER
+
+
+# ------------------------------------------------
+# 6. (OPTIONAL BUT RECOMMENDED)
+# ENABLE FULL-SCREEN MODE IN YOUR INTERFACE.PY
+# ------------------------------------------------
+# In MainWindow.__init__, add:
+# 
+#   from PyQt6.QtCore import QTimer
+#   QTimer.singleShot(300, self.showFullScreen)
+#
+# This ensures the GUI starts in full-screen even after reboot.
+
+
+# ------------------------------------------------
+# 7. REBOOT THE RASPBERRY PI TO TEST AUTOSTART
+# ------------------------------------------------
+sudo reboot
+
+
+# ------------------------------------------------
+# 8. AFTER REBOOT — YOU SHOULD SEE:
+# ------------------------------------------------
+# - Your GUI launches automatically
+# - It opens in full screen
+# - No terminal is required
+# - HV daemon is already running independently via systemd
+#
+# AUTOSTART SUCCESSFUL 🎉
+# ================================================================

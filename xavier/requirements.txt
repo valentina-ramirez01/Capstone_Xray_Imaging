@@ -11,3 +11,9 @@ pillow>=10.0.0
 scipy>=1.11.0
 python-dateutil>=2.8.2
 requests>=2.31.0
+smbus2           
+pyserial          
+libcamera         
+
+# --- Optional (only include if used) ---
+# imutils         # You don’t use it now, keep commented out
