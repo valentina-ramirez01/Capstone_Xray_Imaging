@@ -4,15 +4,10 @@ import threading
 import RPi.GPIO as GPIO
 
 # ============================================================
-# CONFIG
+# CONFIG — Your E-STOP is Normally Open (NO)
 # ============================================================
-
-# E-STOP pin (updated to GPIO26)
-PIN_ESTOP = 22
-
-# Debounce time
-DEBOUNCE_S = 0.02
-
+PIN_ESTOP = 22              # NO Switch → GPIO22 → GND
+DEBOUNCE_S = 0.02           # debounce for stable reads
 
 # ============================================================
 # INTERNAL STATE
@@ -25,15 +20,12 @@ _FAULT_LATCH = False
 
 
 # ============================================================
-# LOW-LEVEL INPUT (debounced)
+# READ STABLE VALUE
+# Returns:
+#   1 = released  (HIGH)
+#   0 = PRESSED   (LOW)
 # ============================================================
-def _read_high_stable() -> int:
-    """
-    Reads the E-STOP pin twice with a delay (debounce).
-    Returns:
-        1 = HIGH (safe)
-        0 = LOW  (pressed)
-    """
+def _read_stable() -> int:
     v1 = GPIO.input(PIN_ESTOP)
     time.sleep(DEBOUNCE_S)
     v2 = GPIO.input(PIN_ESTOP)
@@ -51,7 +43,8 @@ def setup() -> None:
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    # E-STOP is normally closed → input should normally read HIGH
+    # NO switch → normally HIGH (released)
+    # Press = connect to GND → LOW
     GPIO.setup(PIN_ESTOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     _GPIO_READY = True
@@ -65,50 +58,49 @@ def cleanup() -> None:
 
 
 # ============================================================
-# USER-FACING QUERY FUNCTIONS
+# BASIC STATUS CHECKS — MATCHES LIMIT SWITCH LOGIC
 # ============================================================
 def faulted() -> bool:
-    """Returns True if the E-STOP latch is active."""
+    """Returns True if fault latch is active."""
     return _FAULT_LATCH
 
 
 def estop_ok_now() -> bool:
     """
-    Returns realtime state of E-STOP:
-    True  = safe (HIGH)
-    False = pressed (LOW)
+    Returns:
+        True  = released (HIGH)
+        False = pressed  (LOW)
     """
-    return bool(_read_high_stable())
+    return bool(_read_stable())
 
 
 # ============================================================
-# AUTO-CLEARING LATCH (NEW LOGIC)
+# CLEAR FAULT (if released)
 # ============================================================
 def clear_fault() -> bool:
-    """
-    Clears latched fault if E-STOP is physically released.
-    (Not usually needed with auto-clear enabled.)
-    """
     global _FAULT_LATCH
     if not _FAULT_LATCH:
         return True
-    if _read_high_stable() == 1:
+
+    if _read_stable() == 1:   # released
         _FAULT_LATCH = False
         return True
+
     return False
 
 
 # ============================================================
-# BACKGROUND MONITOR LOOP (handles fault AND auto-clear)
+# BACKGROUND MONITOR — Like limit switch, but threaded
+# Called when PRESSED (LOW)
+# Auto-clear when released (HIGH)
 # ============================================================
 def _monitor_loop():
     global _RUN, _FAULT_LATCH, _ON_FAULT
 
     while _RUN:
-        safe = (_read_high_stable() == 1)
+        val = _read_stable()
 
-        if not safe:
-            # ----- E-STOP pressed -----
+        if val == 0:  # ----- PRESSED -----
             if not _FAULT_LATCH:
                 _FAULT_LATCH = True
                 cb = _ON_FAULT
@@ -116,10 +108,9 @@ def _monitor_loop():
                     try:
                         cb()
                     except Exception as e:
-                        print(f"[E-STOP] fault callback error: {e}")
+                        print(f"[E-STOP] callback error: {e}")
 
-        else:
-            # ----- E-STOP physically released — auto-clear -----
+        else:         # ----- RELEASED -----
             if _FAULT_LATCH:
                 _FAULT_LATCH = False
 
@@ -131,9 +122,9 @@ def _monitor_loop():
 # ============================================================
 def start_monitor(on_fault) -> None:
     """
-    Starts background thread to continuously monitor the E-STOP.
-    Calls on_fault() WHEN IT IS PRESSED.
-    Auto-clears the latch when released.
+    Starts background E-STOP monitoring.
+    Calls on_fault() when button is PRESSED (LOW).
+    Auto-clears latch when released.
     """
     global _RUN, _THREAD, _ON_FAULT
 
@@ -149,9 +140,6 @@ def start_monitor(on_fault) -> None:
 
 
 def stop_monitor() -> None:
-    """
-    Safely stops the monitor thread.
-    """
     global _RUN, _THREAD
     _RUN = False
 
