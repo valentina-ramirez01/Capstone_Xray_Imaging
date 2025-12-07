@@ -27,7 +27,6 @@ from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier.adc_reader import read_hv_voltage, hv_status_ok
 
-
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
     motor1_backward_until_switch1,
@@ -139,14 +138,12 @@ class MainWindow(QMainWindow):
         self.leds = LedPanel()
 
         # STATES
-        self.preview_on = False
-        self.armed = False
+        self.preview_on     = False
+        self.armed          = False
         self.hv_fault_active = False
         self.has_closed_once = False
-        self.has_started = False
-
-        # NEW STATE: ADC runs only when HV is actually ON
-        self.hv_active = False
+        self.has_started     = False
+        self.hv_active       = False   # ADC runs ONLY when HV is ON
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # SW2 detect
@@ -186,8 +183,8 @@ class MainWindow(QMainWindow):
             self.btn_editor
         ):
             left.addWidget(b)
-        left.addStretch()
 
+        left.addStretch()
         center = QVBoxLayout()
         center.addWidget(self.alarm)
         center.addWidget(self.view, 1)
@@ -211,7 +208,7 @@ class MainWindow(QMainWindow):
         self.btn_show_last.clicked.connect(self.on_show_last)
         self.btn_editor.clicked.connect(self.on_editor)
 
-        # Timers
+        # Timers (STARTED LATER — NOT HERE)
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
@@ -219,16 +216,11 @@ class MainWindow(QMainWindow):
         self.adc_timer = QTimer(self)
         self.adc_timer.setInterval(300)
         self.adc_timer.timeout.connect(self.check_adc_safety)
-        self.adc_timer.start()
 
         self.align_timer = QTimer(self)
         self.align_timer.setInterval(100)
         self.align_timer.timeout.connect(self.check_alignment)
-        self.align_timer.start()
 
-        
-
-        # STARTUP STATE: no LEDs
         self.all_leds_off()
 
 
@@ -260,11 +252,6 @@ class MainWindow(QMainWindow):
     # ADC SAFETY (ONLY ACTIVE WHEN HV IS ON)
     # ============================================================
     def check_adc_safety(self):
-       
-
-        # -----------------------------------------------------------
-        # SKIP ALL ADC SAFETY IF HV IS NOT ON
-        # -----------------------------------------------------------
         if not self.hv_active:
             return
 
@@ -284,15 +271,14 @@ class MainWindow(QMainWindow):
                 self.btn_open, self.btn_close,
                 self.btn_rotate, self.btn_home3,
                 self.btn_xray, self.btn_preview,
-                self.btn_stop,
-                self.btn_gallery, self.btn_show_last,
-                self.btn_editor
+                self.btn_stop, self.btn_gallery,
+                self.btn_show_last, self.btn_editor
             ):
                 b.setEnabled(False)
 
             return
 
-        # HV SAFE AGAIN
+        # If safe:
         self.hv_fault_active = False
 
         for b in (
@@ -306,11 +292,9 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # ALIGNMENT — ONLY ACTIVE AFTER FIRST CLOSE
+    # ALIGNMENT SYSTEM
     # ============================================================
     def check_alignment(self):
-        
-
         if self.hv_fault_active:
             return
 
@@ -326,7 +310,6 @@ class MainWindow(QMainWindow):
             self.banner("Tray Open — Insert Sample", color="yellow")
             return
 
-        # Alignment phase
         sw2 = GPIO.input(18)
 
         if sw2 == 0:
@@ -343,8 +326,6 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_open(self):
-        
-
         if self.hv_fault_active:
             return
 
@@ -362,7 +343,6 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_close(self):
-        
         if self.hv_fault_active:
             return
 
@@ -372,29 +352,25 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.amber, True)
 
         motor1_forward_until_switch2()
-
         self.has_closed_once = True
 
 
     # ============================================================
     def on_rotate45(self):
-       
         if not self.hv_fault_active:
             motor3_rotate_45()
 
 
     # ============================================================
     def on_home3(self):
-        
         if not self.hv_fault_active:
             motor3_home()
 
 
     # ============================================================
-    # XRAY — WATCHDOG PROTECTED
+    # XRAY ROUTINE
     # ============================================================
     def on_xray(self):
-      
 
         if self.hv_fault_active:
             QMessageBox.warning(self,"HV Fault","Unsafe HV level detected.")
@@ -404,15 +380,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self,"Not Aligned","Tray must be fully closed.")
             return
 
+        # UI feedback
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
         QApplication.processEvents()
 
         try:
-            # ---------------------------------------------------
-            # HV ACTIVATION — ADC MUST NOW MONITOR SAFETY
-            # ---------------------------------------------------
             self.hv_active = True
             hv_on()
             time.sleep(0.4)
@@ -431,12 +405,15 @@ class MainWindow(QMainWindow):
             hv_off()
             self.hv_active = False
 
-        # After safe shutdown
+        # Reset UI state
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
 
-        filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        filename = (
+            f"/home/xray_juanito/Capstone_Xray_Imaging/captures/"
+            f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        )
         cv2.imwrite(filename, img)
 
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -452,7 +429,6 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_show_last(self):
-        
 
         if self.hv_fault_active:
             return
@@ -485,20 +461,19 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_preview(self):
-       
 
         if not self.preview_on:
-            self.preview_on=True
+            self.preview_on = True
             self.timer.start()
         else:
-            self.preview_on=False
+            self.preview_on = False
             self.timer.stop()
 
 
     # ============================================================
     def on_stop(self):
-        
-        self.preview_on=False
+
+        self.preview_on = False
         self.timer.stop()
         self.backend.stop()
         self.all_leds_off()
@@ -507,14 +482,13 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def update_frame(self):
-       
 
         if not self.preview_on:
             return
 
         gray = self.backend.grab_gray()
         disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        h,w = disp.shape[:2]
+        h, w = disp.shape[:2]
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
@@ -526,7 +500,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_export(self):
-        
+
         try:
             frame = self.backend.grab_bgr()
             filename = capture_and_save_frame(frame, save_dir="captures")
@@ -537,7 +511,6 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_gallery(self):
-        
 
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
         all_imgs = sorted(list(base_dir.glob("*.jpg")) + list(base_dir.glob("*.png")))
@@ -551,10 +524,9 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_editor(self):
-       
 
         import glob
-        base="/home/xray_juanito/Capstone_Xray_Imaging/captures"
+        base = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
         files = sorted(glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png"))
 
         if not files:
@@ -568,8 +540,6 @@ class MainWindow(QMainWindow):
         self.banner("Editing Image", color="yellow")
 
 
-    # ============================================================
-    # EXIT CLEANUP
     # ============================================================
     def closeEvent(self, event):
 
@@ -605,6 +575,11 @@ def main():
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
+
+    # START TIMERS AFTER GUI IS STABLE (IMPORTANT FIX)
+    win.adc_timer.start()
+    win.align_timer.start()
+
     sys.exit(app.exec())
 
 
