@@ -211,7 +211,7 @@ class MainWindow(QMainWindow):
         self.btn_show_last.clicked.connect(self.on_show_last)
         self.btn_editor.clicked.connect(self.on_editor)
 
-        # Timers (STARTED LATER — NOT HERE)
+        # Timers
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
@@ -227,13 +227,13 @@ class MainWindow(QMainWindow):
         self.all_leds_off()
 
         # ============================================================
-        # START E-STOP MONITOR (NEW)
+        # START E-STOP MONITOR
         # ============================================================
         gpio_estop.start_monitor(self.handle_estop_fault)
 
 
     # ============================================================
-    # NEW: E-STOP FAULT HANDLER
+    # E-STOP FAULT HANDLER
     # ============================================================
     def handle_estop_fault(self):
         # Stop everything instantly
@@ -331,19 +331,26 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # ALIGNMENT SYSTEM (E-STOP PATCH INCLUDED)
+    # ALIGNMENT SYSTEM (includes E-STOP release patch)
     # ============================================================
     def check_alignment(self):
 
-        # ---------- NEW: Freeze system if E-STOP is pressed ----------
+        # Freeze system if E-STOP is pressed
         if gpio_estop.faulted():
             self.all_leds_off()
             self.leds.write(self.leds.red, True)
             self.banner("E-STOP ACTIVE — RELEASE BUTTON", color="red")
             return
 
-        # ---------- NEW: Re-enable controls after release ----------
+        # NEW PATCH: Recover system when E-STOP is released
         if not gpio_estop.faulted() and gpio_estop.estop_ok_now():
+            # Restart timers if needed
+            if not self.adc_timer.isActive():
+                self.adc_timer.start()
+            if not self.align_timer.isActive():
+                self.align_timer.start()
+
+            # Re-enable controls
             for b in (
                 self.btn_open, self.btn_close,
                 self.btn_rotate, self.btn_home3,
@@ -354,7 +361,7 @@ class MainWindow(QMainWindow):
             ):
                 b.setEnabled(True)
 
-        # ORIGINAL LOGIC CONTINUES UNTOUCHED FROM HERE ↓↓↓
+        # ORIGINAL LOGIC CONTINUES BELOW —
 
         if self.hv_fault_active:
             return
