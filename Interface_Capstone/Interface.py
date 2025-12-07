@@ -42,7 +42,7 @@ from xavier.camera_picam2 import Picamera2
 # CAMERA BACKEND
 # ============================================================
 class PiCamBackend:
-    def __init__(self, preview_size=(1280,720), still_size=(1920,1080)):
+    def __init__(self, preview_size=(2592, 1944), still_size=(2592, 1944)):
         self.preview_size = preview_size
         self.still_size   = still_size
         self.cam: Picamera2 | None = None
