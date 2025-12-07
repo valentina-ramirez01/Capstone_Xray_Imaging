@@ -12,7 +12,7 @@ import numpy as np
 from mipi_camera import CameraController
 
 DEFAULT_PHOTO_SHUTTER_US = 200_000  # 200 ms
-DEFAULT_PHOTO_GAIN       = 4.0
+DEFAULT_PHOTO_GAIN       = 16
 
 WIN = "Mono Live — p/s:photo  m:meter  g:gallery  b:boost  f:fullscreen  q:quit"
 

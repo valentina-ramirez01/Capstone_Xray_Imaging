@@ -23,7 +23,7 @@ GPIO.setup(SW2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 def motor1_forward_until_switch2():
     print("Motor1 → FORWARD until Switch2...")
-    while GPIO.input(SW2) == 1:    # 1 = NOT pressed
+    while GPIO.input(SW2) == 1:    # NOT pressed
         ser.write(b"M1F\n")
         time.sleep(0.002)
     print("Switch2 hit.")
@@ -85,7 +85,7 @@ def motor2_home_to_limit3():
     return steps_taken
 
 def motor2_move_full_up():
-    print(f"Motor2 → moving {FULL_TRAVEL_STEPS} steps down…")
+    print(f"Motor2 → moving {FULL_TRAVEL_STEPS} steps…")
     for _ in range(FULL_TRAVEL_STEPS):
         motor2_step(-1)
 
@@ -120,7 +120,7 @@ def motor3_rotate_45():
 
 
 # ============================================================
-# KEYBOARD INPUT (no enter key needed)
+# KEYBOARD INPUT (NO ENTER REQUIRED)
 # ============================================================
 def getch():
     fd = sys.stdin.fileno()
@@ -144,7 +144,8 @@ Motor1 (Arduino):
     r = close (forward until SW2)
 
 Motor2:
-    a = ALIGN SAMPLE (home to SW3, then move 6895 steps)
+    a = ALIGN sample 
+        (home to SW3 → move 6895 steps)
 
 Motor3:
     p = rotate 45° once

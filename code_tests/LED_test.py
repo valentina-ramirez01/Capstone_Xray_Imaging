@@ -2,7 +2,7 @@ import time
 import RPi.GPIO as GPIO
 
 # Actual LED pins
-RED = 26
+RED = 4
 AMBER = 13
 GREEN = 21
 BLUE = 27
