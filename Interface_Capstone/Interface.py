@@ -37,8 +37,9 @@ from xavier.stepper_Motor import (
 ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 from xavier.camera_picam2 import Picamera2
 
-# NEW: import gpio_estop
+# ⭐ NEW: E-STOP module (final version)
 from xavier import gpio_estop
+
 
 
 # ============================================================
@@ -146,17 +147,19 @@ class MainWindow(QMainWindow):
         self.hv_fault_active = False
         self.has_closed_once = False
         self.has_started     = False
-        self.hv_active       = False   # ADC runs ONLY when HV is ON
+        self.hv_active       = False
 
+        # SW2
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # SW2 detect
+        GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
+        # Camera
         self.backend = PiCamBackend()
         self.backend.start()
 
-        # -----------------------------------------------
-        # UI
-        # -----------------------------------------------
+        # -------------------------
+        # UI Setup
+        # -------------------------
         self.alarm = QLabel("System Ready", alignment=Qt.AlignmentFlag.AlignCenter)
         self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
 
@@ -199,7 +202,9 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-        # Buttons
+        # -------------------------
+        # Connect buttons
+        # -------------------------
         self.btn_open.clicked.connect(self.on_open)
         self.btn_close.clicked.connect(self.on_close)
         self.btn_rotate.clicked.connect(self.on_rotate45)
@@ -211,7 +216,9 @@ class MainWindow(QMainWindow):
         self.btn_show_last.clicked.connect(self.on_show_last)
         self.btn_editor.clicked.connect(self.on_editor)
 
+        # -------------------------
         # Timers
+        # -------------------------
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
@@ -226,17 +233,15 @@ class MainWindow(QMainWindow):
 
         self.all_leds_off()
 
-        # ============================================================
-        # START E-STOP MONITOR
-        # ============================================================
-        gpio_estop.start_monitor(self.handle_estop_fault)
+        # ⭐ START E-STOP MONITOR WITH RELEASE CALLBACK
+        gpio_estop.start_monitor(self.handle_estop_fault, self.handle_estop_release)
+
 
 
     # ============================================================
-    # E-STOP FAULT HANDLER
+    # E-STOP: PRESS HANDLER
     # ============================================================
     def handle_estop_fault(self):
-        # Stop everything instantly
         try: self.timer.stop()
         except: pass
         try: self.adc_timer.stop()
@@ -248,19 +253,46 @@ class MainWindow(QMainWindow):
         try: self.backend.stop()
         except: pass
 
-        # UI indication
         self.all_leds_off()
         self.leds.write(self.leds.red, True)
         self.banner("E-STOP PRESSED — SYSTEM HALTED", color="red")
 
-        # Disable controls
         for b in (
-            self.btn_open, self.btn_close, self.btn_rotate, self.btn_home3,
+            self.btn_open, self.btn_close,
+            self.btn_rotate, self.btn_home3,
             self.btn_preview, self.btn_xray,
             self.btn_gallery, self.btn_show_last,
             self.btn_editor
         ):
             b.setEnabled(False)
+
+
+
+    # ============================================================
+    # ⭐ E-STOP: RELEASE HANDLER (FIXES GUI RECOVERY)
+    # ============================================================
+    def handle_estop_release(self):
+
+        # Restart timers
+        if not self.adc_timer.isActive():
+            self.adc_timer.start()
+        if not self.align_timer.isActive():
+            self.align_timer.start()
+
+        # Enable controls
+        for b in (
+            self.btn_open, self.btn_close,
+            self.btn_rotate, self.btn_home3,
+            self.btn_preview, self.btn_xray, self.btn_stop,
+            self.btn_gallery, self.btn_show_last,
+            self.btn_editor
+        ):
+            b.setEnabled(True)
+
+        # Reset UI appearance
+        self.all_leds_off()
+        self.banner("System Ready")
+
 
 
     # ============================================================
@@ -269,6 +301,7 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.amber, False)
         self.leds.write(self.leds.green, False)
         self.leds.write(self.leds.blue, False)
+
 
 
     # ============================================================
@@ -287,8 +320,9 @@ class MainWindow(QMainWindow):
         self.alarm.setText(text)
 
 
+
     # ============================================================
-    # ADC SAFETY (ONLY ACTIVE WHEN HV IS ON)
+    # ADC SAFETY
     # ============================================================
     def check_adc_safety(self):
         if not self.hv_active:
@@ -317,7 +351,6 @@ class MainWindow(QMainWindow):
 
             return
 
-        # If safe:
         self.hv_fault_active = False
 
         for b in (
@@ -330,38 +363,11 @@ class MainWindow(QMainWindow):
             b.setEnabled(True)
 
 
+
     # ============================================================
-    # ALIGNMENT SYSTEM (includes E-STOP release patch)
+    # ALIGNMENT SYSTEM
     # ============================================================
     def check_alignment(self):
-
-        # Freeze system if E-STOP is pressed
-        if gpio_estop.faulted():
-            self.all_leds_off()
-            self.leds.write(self.leds.red, True)
-            self.banner("E-STOP ACTIVE — RELEASE BUTTON", color="red")
-            return
-
-        # NEW PATCH: Recover system when E-STOP is released
-        if not gpio_estop.faulted() and gpio_estop.estop_ok_now():
-            # Restart timers if needed
-            if not self.adc_timer.isActive():
-                self.adc_timer.start()
-            if not self.align_timer.isActive():
-                self.align_timer.start()
-
-            # Re-enable controls
-            for b in (
-                self.btn_open, self.btn_close,
-                self.btn_rotate, self.btn_home3,
-                self.btn_preview, self.btn_xray,
-                self.btn_stop,
-                self.btn_gallery, self.btn_show_last,
-                self.btn_editor
-            ):
-                b.setEnabled(True)
-
-        # ORIGINAL LOGIC CONTINUES BELOW —
 
         if self.hv_fault_active:
             return
@@ -392,6 +398,7 @@ class MainWindow(QMainWindow):
             self.banner("Tray Closing…", color="yellow")
 
 
+
     # ============================================================
     def on_open(self):
         if self.hv_fault_active:
@@ -409,6 +416,7 @@ class MainWindow(QMainWindow):
         self.banner("Tray Open — Insert Sample", color="yellow")
 
 
+
     # ============================================================
     def on_close(self):
         if self.hv_fault_active:
@@ -423,10 +431,12 @@ class MainWindow(QMainWindow):
         self.has_closed_once = True
 
 
+
     # ============================================================
     def on_rotate45(self):
         if not self.hv_fault_active:
             motor3_rotate_45()
+
 
 
     # ============================================================
@@ -435,8 +445,7 @@ class MainWindow(QMainWindow):
             motor3_home()
 
 
-    # ============================================================
-    # XRAY ROUTINE
+
     # ============================================================
     def on_xray(self):
 
@@ -448,7 +457,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self,"Not Aligned","Tray must be fully closed.")
             return
 
-        # UI feedback
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
@@ -464,8 +472,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             hv_off()
             self.hv_active = False
-            QMessageBox.critical(self,"Error",
-                                 "Camera failure — HV turned OFF for safety.")
+            QMessageBox.critical(self,"Error","Camera failure — HV turned OFF for safety.")
             print("XRAY ERROR:", e)
             return
 
@@ -473,7 +480,6 @@ class MainWindow(QMainWindow):
             hv_off()
             self.hv_active = False
 
-        # Reset UI state
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
@@ -493,6 +499,7 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
+
 
 
     # ============================================================
@@ -527,6 +534,7 @@ class MainWindow(QMainWindow):
         self.banner("Showing Last X-Ray", color="yellow")
 
 
+
     # ============================================================
     def on_preview(self):
 
@@ -538,6 +546,7 @@ class MainWindow(QMainWindow):
             self.timer.stop()
 
 
+
     # ============================================================
     def on_stop(self):
 
@@ -546,6 +555,7 @@ class MainWindow(QMainWindow):
         self.backend.stop()
         self.all_leds_off()
         self.banner("STOPPED", color="red")
+
 
 
     # ============================================================
@@ -564,6 +574,7 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         self.view.setPixmap(px)
+
 
 
     # ============================================================
@@ -608,12 +619,12 @@ class MainWindow(QMainWindow):
         self.banner("Editing Image", color="yellow")
 
 
+
     # ============================================================
     def closeEvent(self, event):
 
         print("[CLOSE] Safe shutdown…")
 
-        # NEW: Stop estop monitor
         try:
             gpio_estop.stop_monitor()
         except:
@@ -650,7 +661,6 @@ def main():
     win = MainWindow()
     win.show()
 
-    # START TIMERS AFTER GUI IS STABLE (IMPORTANT)
     win.adc_timer.start()
     win.align_timer.start()
 
