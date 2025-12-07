@@ -27,7 +27,6 @@ from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier.adc_reader import read_hv_voltage, hv_status_ok
 
-from xavier.hv_watchdog import start_watchdog, stop_watchdog, heartbeat
 
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
@@ -227,10 +226,7 @@ class MainWindow(QMainWindow):
         self.align_timer.timeout.connect(self.check_alignment)
         self.align_timer.start()
 
-        # -----------------------------------------------
-        # WATCHDOG START
-        # -----------------------------------------------
-        start_watchdog()
+        
 
         # STARTUP STATE: no LEDs
         self.all_leds_off()
@@ -264,7 +260,7 @@ class MainWindow(QMainWindow):
     # ADC SAFETY (ONLY ACTIVE WHEN HV IS ON)
     # ============================================================
     def check_adc_safety(self):
-        heartbeat()
+       
 
         # -----------------------------------------------------------
         # SKIP ALL ADC SAFETY IF HV IS NOT ON
@@ -313,7 +309,7 @@ class MainWindow(QMainWindow):
     # ALIGNMENT — ONLY ACTIVE AFTER FIRST CLOSE
     # ============================================================
     def check_alignment(self):
-        heartbeat()
+        
 
         if self.hv_fault_active:
             return
@@ -347,7 +343,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_open(self):
-        heartbeat()
+        
 
         if self.hv_fault_active:
             return
@@ -366,8 +362,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_close(self):
-        heartbeat()
-
+        
         if self.hv_fault_active:
             return
 
@@ -383,14 +378,14 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_rotate45(self):
-        heartbeat()
+       
         if not self.hv_fault_active:
             motor3_rotate_45()
 
 
     # ============================================================
     def on_home3(self):
-        heartbeat()
+        
         if not self.hv_fault_active:
             motor3_home()
 
@@ -399,7 +394,7 @@ class MainWindow(QMainWindow):
     # XRAY — WATCHDOG PROTECTED
     # ============================================================
     def on_xray(self):
-        heartbeat()
+      
 
         if self.hv_fault_active:
             QMessageBox.warning(self,"HV Fault","Unsafe HV level detected.")
@@ -457,7 +452,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_show_last(self):
-        heartbeat()
+        
 
         if self.hv_fault_active:
             return
@@ -490,7 +485,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_preview(self):
-        heartbeat()
+       
 
         if not self.preview_on:
             self.preview_on=True
@@ -502,8 +497,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_stop(self):
-        heartbeat()
-
+        
         self.preview_on=False
         self.timer.stop()
         self.backend.stop()
@@ -513,7 +507,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def update_frame(self):
-        heartbeat()
+       
 
         if not self.preview_on:
             return
@@ -532,8 +526,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_export(self):
-        heartbeat()
-
+        
         try:
             frame = self.backend.grab_bgr()
             filename = capture_and_save_frame(frame, save_dir="captures")
@@ -544,7 +537,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_gallery(self):
-        heartbeat()
+        
 
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
         all_imgs = sorted(list(base_dir.glob("*.jpg")) + list(base_dir.glob("*.png")))
@@ -558,7 +551,7 @@ class MainWindow(QMainWindow):
 
     # ============================================================
     def on_editor(self):
-        heartbeat()
+       
 
         import glob
         base="/home/xray_juanito/Capstone_Xray_Imaging/captures"
@@ -595,9 +588,6 @@ class MainWindow(QMainWindow):
         except: pass
 
         try: self.backend.stop()
-        except: pass
-
-        try: stop_watchdog()
         except: pass
 
         try:
