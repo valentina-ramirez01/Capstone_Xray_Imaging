@@ -90,26 +90,48 @@ def clear_fault() -> bool:
 def _monitor_loop():
     global _RUN, _FAULT_LATCH, _ON_FAULT, _ON_RELEASE
 
+    PRESS_DELAY = 0.5      # seconds LOW required to declare fault
+    RELEASE_DELAY = 0.5    # optional – same logic for release delay
+
+    low_start = None
+    high_start = None
+
     while _RUN:
         val = _read_stable()
 
         if val == 0:  # ------- PRESSED -------
-            if not _FAULT_LATCH:     # only trigger once
-                _FAULT_LATCH = True
-                if _ON_FAULT:
-                    try:
-                        _ON_FAULT()
-                    except Exception as e:
-                        print(f"[E-STOP] fault callback error: {e}")
+            if low_start is None:
+                low_start = time.time()
 
-        else:  # ------- RELEASED -------
-            if _FAULT_LATCH:         # only trigger once
-                _FAULT_LATCH = False
-                if _ON_RELEASE:
-                    try:
-                        _ON_RELEASE()
-                    except Exception as e:
-                        print(f"[E-STOP] release callback error: {e}")
+            # check sustained LOW
+            if (time.time() - low_start) >= PRESS_DELAY:
+                if not _FAULT_LATCH:
+                    _FAULT_LATCH = True
+                    if _ON_FAULT:
+                        try:
+                            _ON_FAULT()
+                        except Exception as e:
+                            print(f"[E-STOP] fault callback error: {e}")
+
+                # reset high timer
+                high_start = None
+
+        else:  # HIGH detected
+            if high_start is None:
+                high_start = time.time()
+
+            # check sustained HIGH
+            if (time.time() - high_start) >= RELEASE_DELAY:
+                if _FAULT_LATCH:
+                    _FAULT_LATCH = False
+                    if _ON_RELEASE:
+                        try:
+                            _ON_RELEASE()
+                        except Exception as e:
+                            print(f"[E-STOP] release callback error: {e}")
+
+            # reset low timer
+            low_start = None
 
         time.sleep(0.05)
 
