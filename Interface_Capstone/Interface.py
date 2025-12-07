@@ -37,6 +37,9 @@ from xavier.stepper_Motor import (
 ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 from xavier.camera_picam2 import Picamera2
 
+# NEW: import gpio_estop
+from xavier import gpio_estop
+
 
 # ============================================================
 # CAMERA BACKEND
@@ -223,6 +226,42 @@ class MainWindow(QMainWindow):
 
         self.all_leds_off()
 
+        # ============================================================
+        # START E-STOP MONITOR (NEW)
+        # ============================================================
+        gpio_estop.start_monitor(self.handle_estop_fault)
+
+
+    # ============================================================
+    # NEW: E-STOP FAULT HANDLER
+    # ============================================================
+    def handle_estop_fault(self):
+        # Stop everything instantly
+        try: self.timer.stop()
+        except: pass
+        try: self.adc_timer.stop()
+        except: pass
+        try: self.align_timer.stop()
+        except: pass
+        try: hv_off()
+        except: pass
+        try: self.backend.stop()
+        except: pass
+
+        # UI indication
+        self.all_leds_off()
+        self.leds.write(self.leds.red, True)
+        self.banner("E-STOP PRESSED — SYSTEM HALTED", color="red")
+
+        # Disable controls
+        for b in (
+            self.btn_open, self.btn_close, self.btn_rotate, self.btn_home3,
+            self.btn_preview, self.btn_xray,
+            self.btn_gallery, self.btn_show_last,
+            self.btn_editor
+        ):
+            b.setEnabled(False)
+
 
     # ============================================================
     def all_leds_off(self):
@@ -292,9 +331,31 @@ class MainWindow(QMainWindow):
 
 
     # ============================================================
-    # ALIGNMENT SYSTEM
+    # ALIGNMENT SYSTEM (E-STOP PATCH INCLUDED)
     # ============================================================
     def check_alignment(self):
+
+        # ---------- NEW: Freeze system if E-STOP is pressed ----------
+        if gpio_estop.faulted():
+            self.all_leds_off()
+            self.leds.write(self.leds.red, True)
+            self.banner("E-STOP ACTIVE — RELEASE BUTTON", color="red")
+            return
+
+        # ---------- NEW: Re-enable controls after release ----------
+        if not gpio_estop.faulted() and gpio_estop.estop_ok_now():
+            for b in (
+                self.btn_open, self.btn_close,
+                self.btn_rotate, self.btn_home3,
+                self.btn_preview, self.btn_xray,
+                self.btn_stop,
+                self.btn_gallery, self.btn_show_last,
+                self.btn_editor
+            ):
+                b.setEnabled(True)
+
+        # ORIGINAL LOGIC CONTINUES UNTOUCHED FROM HERE ↓↓↓
+
         if self.hv_fault_active:
             return
 
@@ -545,6 +606,12 @@ class MainWindow(QMainWindow):
 
         print("[CLOSE] Safe shutdown…")
 
+        # NEW: Stop estop monitor
+        try:
+            gpio_estop.stop_monitor()
+        except:
+            pass
+
         try: self.timer.stop()
         except: pass
 
@@ -576,7 +643,7 @@ def main():
     win = MainWindow()
     win.show()
 
-    # START TIMERS AFTER GUI IS STABLE (IMPORTANT FIX)
+    # START TIMERS AFTER GUI IS STABLE (IMPORTANT)
     win.adc_timer.start()
     win.align_timer.start()
 
