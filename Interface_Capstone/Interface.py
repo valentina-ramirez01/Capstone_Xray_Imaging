@@ -848,9 +848,10 @@ class MainWindow(QMainWindow):
         if not all_imgs:
             QMessageBox.information(self, "Gallery", "No images found.")
             return
-        
-        GalleryWindow([str(p) for p in all_imgs]).show()
-
+    
+    # KEEP A REFERENCE OR PYQT DESTROYS IT
+        self.gallery_window = GalleryWindow([str(p) for p in all_imgs])
+        self.gallery_window.show()
 
 
 
