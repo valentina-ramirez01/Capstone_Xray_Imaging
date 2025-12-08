@@ -11,7 +11,7 @@ class LedPanel:
 
     def __init__(self):
         # Updated pin numbers
-        self.red = 4
+        self.red = 26
         self.amber = 13
         self.green = 21
         self.blue = 27
