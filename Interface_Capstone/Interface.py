@@ -24,7 +24,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 
 from xavier.io_utils import capture_and_save_frame
-from xavier.gallery import Gallery, ImageEditorWindow
+from xavier.gallery import Gallery, ImageEditorWindow, GalleryWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier.adc_reader import read_hv_voltage, hv_status_ok
@@ -848,8 +848,9 @@ class MainWindow(QMainWindow):
         if not all_imgs:
             QMessageBox.information(self, "Gallery", "No images found.")
             return
+        
+        GalleryWindow([str(p) for p in all_imgs]).show()
 
-        Gallery([str(p) for p in all_imgs]).run()
 
 
 

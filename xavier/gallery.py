@@ -6,22 +6,24 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QMessageBox
+    QMessageBox
 )
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtCore import Qt
 
-from xavier.tools import apply_contrast_brightness, apply_zoom, fit_in_window
+from xavier.tools import apply_contrast_brightness, fit_in_window
 
 
 # =====================================================================
-#   PYQT6 IMAGE EDITOR WINDOW  —  FIXED SIZE + PERFECT SCALING
+#   IMAGE EDITOR WINDOW  —  FIXED SIZE + PROPER SCALING (NO STRETCH)
 # =====================================================================
 class ImageEditorWindow(QWidget):
     def __init__(self, img_path: str):
         super().__init__()
 
         self.setWindowTitle("Edit Image")
+
+        # FIX: safe standalone size (NOT fullscreen)
         self.setMinimumSize(400, 300)
         self.resize(900, 700)
 
@@ -37,13 +39,11 @@ class ImageEditorWindow(QWidget):
         self.alpha = 1.0
         self.beta = 0
 
-        # PREVIEW LABEL — center + prevent stretching
+        # UI
         self.preview = QLabel("")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setStyleSheet("background-color:black;")
-        self.preview.setScaledContents(False)
 
-        # Buttons
         btn_inc_con = QPushButton("Contrast +")
         btn_dec_con = QPushButton("Contrast -")
         btn_inc_bri = QPushButton("Brightness +")
@@ -63,7 +63,7 @@ class ImageEditorWindow(QWidget):
             controls.addWidget(b)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.preview, stretch=1)
+        layout.addWidget(self.preview, 1)
         layout.addLayout(controls)
 
         self.update_preview()
@@ -72,8 +72,10 @@ class ImageEditorWindow(QWidget):
     def update_preview(self):
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
 
-        win_w = max(self.preview.width(), 100)
-        win_h = max(self.preview.height(), 100)
+        win_w = self.preview.width()
+        win_h = self.preview.height()
+        if win_w < 50 or win_h < 50:
+            win_w, win_h = 200, 200
 
         disp = fit_in_window(edited, win_w, win_h)
 
@@ -85,6 +87,7 @@ class ImageEditorWindow(QWidget):
         super().resizeEvent(event)
         self.update_preview()
 
+    # ------------------------------------------------------------------
     def adjust_contrast(self, da):
         self.alpha = float(np.clip(self.alpha + da, 0.1, 5.0))
         self.update_preview()
@@ -93,134 +96,97 @@ class ImageEditorWindow(QWidget):
         self.beta = float(np.clip(self.beta + db, -100, 100))
         self.update_preview()
 
+    # ------------------------------------------------------------------
     def save_copy(self):
-        base = os.path.dirname(self.img_path)
-        n = len(glob.glob(os.path.join(base, "edited_*.png")))
-        out = os.path.join(base, f"edited_{n:04d}.png")
+        base_dir = os.path.dirname(self.img_path)
+        n = len(glob.glob(os.path.join(base_dir, "edited_*.png")))
+        out_path = os.path.join(base_dir, f"edited_{n:04d}.png")
 
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
-        cv2.imwrite(out, edited)
-
-        QMessageBox.information(self, "Saved", f"Saved:\n{out}")
+        cv2.imwrite(out_path, edited)
+        QMessageBox.information(self, "Saved", f"Edited copy saved:\n{out_path}")
 
 
 # =====================================================================
-#   MAIN GALLERY (OpenCV Window) — FIXED ASPECT RATIO
+#   **NEW** PYQT6 GALLERY WINDOW — NO STRETCH EVER
 # =====================================================================
-class Gallery:
-    """
-    Extended gallery plus optional PyQt6 editor window.
-    """
+class GalleryWindow(QWidget):
+    def __init__(self, images: List[str]):
+        super().__init__()
 
-    def __init__(self, image_paths: List[str], window_name: str = "Gallery"):
-        self.files = image_paths
-        self.win = window_name
+        self.images = images
         self.idx = 0
 
-        # Viewer state
-        self.alpha: float = 1.0
-        self.beta: float = 0.0
-        self.zoom: float = 1.0
+        self.setWindowTitle("Gallery Viewer")
+        self.resize(1280, 720)
 
-        self._last_processed: Optional[np.ndarray] = None
+        # Main display area
+        self.preview = QLabel("")
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setStyleSheet("background-color:black;")
 
-    # ---------------- USER ACTION HOOK ----------------
-    def open_in_editor(self):
-        path = self.files[self.idx]
-        editor = ImageEditorWindow(path)
-        editor.show()
+        # Buttons
+        btn_prev = QPushButton("⟵ Previous")
+        btn_next = QPushButton("Next ⟶")
+        btn_edit = QPushButton("Edit Image")
+        btn_close = QPushButton("Close")
 
-    # ---------------- Viewer Internals ----------------
-    def set_contrast(self, alpha: float) -> None:
-        self.alpha = float(np.clip(alpha, 0.1, 5.0))
+        btn_prev.clicked.connect(self.prev_img)
+        btn_next.clicked.connect(self.next_img)
+        btn_edit.clicked.connect(self.open_editor)
+        btn_close.clicked.connect(self.close)
 
-    def adjust_contrast(self, d_alpha: float) -> None:
-        self.set_contrast(self.alpha + d_alpha)
+        controls = QHBoxLayout()
+        for b in (btn_prev, btn_next, btn_edit, btn_close):
+            controls.addWidget(b)
 
-    def set_brightness(self, beta: float) -> None:
-        self.beta = float(np.clip(beta, -100.0, 100.0))
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.preview, 1)
+        layout.addLayout(controls)
 
-    def adjust_brightness(self, d_beta: float) -> None:
-        self.set_brightness(self.beta + d_beta)
+        self.update_image()
 
-    def set_zoom(self, z: float) -> None:
-        self.zoom = float(np.clip(z, 1.0, 4.0))
+    # ----------------------------------------------------------
+    def load_image(self, path):
+        img = cv2.imread(path)
+        if img is None:
+            return None
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    def adjust_zoom(self, step: float) -> None:
-        self.set_zoom(self.zoom * (1.0 + step))
-
-    def reset_view(self) -> None:
-        self.alpha, self.beta, self.zoom = 1.0, 0.0, 1.0
-
-    def _load(self, i: int) -> Optional[np.ndarray]:
-        path = self.files[i]
-        return cv2.imread(path, cv2.IMREAD_COLOR)
-
-    # render current image into correct size
-    def _render_current(self) -> np.ndarray:
-        path = self.files[self.idx]
-        img = self._load(self.idx)
+    # ----------------------------------------------------------
+    def update_image(self):
+        path = self.images[self.idx]
+        img = self.load_image(path)
 
         if img is None:
-            canvas = np.zeros((240, 960, 3), dtype=np.uint8)
-            cv2.putText(canvas, f"Couldn't read: {os.path.basename(path)}",
-                        (20,140), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                        (0,255,255), 2)
-            self._last_processed = canvas
-            return canvas
-
-        proc = apply_zoom(img, self.zoom)
-        proc = apply_contrast_brightness(proc, self.alpha, self.beta)
-
-        # 🔥 NEW: dynamic, non-stretched fit — matches interface scaling
-        disp = fit_in_window(proc, 1280, 720)
-
-        hud = (
-            f"{self.idx+1}/{len(self.files)}  {os.path.basename(path)}  |  "
-            f"zoom {self.zoom:.2f}x  alpha {self.alpha:.2f}  beta {self.beta:.0f}"
-        )
-        cv2.putText(disp, hud, (12, 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
-        cv2.putText(disp, hud, (12, 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
-
-        self._last_processed = proc
-        return disp
-
-    # =================================================================
-    # FIXED KEYBOARD HANDLING — RASPBERRY PI + OPENCV COMPATIBLE
-    # =================================================================
-    def run(self):
-        if not self.files:
-            print("No images.")
             return
 
-        # 🔥 CRITICAL FIX — prevents stretching
-        cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.win, 1280, 720)
+        h, w = img.shape[:2]
+        qimg = QImage(img.data, w, h, 3*w, QImage.Format.Format_RGB888)
 
-        while True:
-            cv2.imshow(self.win, self._render_current())
-            k = cv2.waitKeyEx(0) & 0xFFFFFFFF
+        # EXACTLY THE SAME SCALING LOGIC AS MAIN GUI
+        pix = QPixmap.fromImage(qimg).scaled(
+            self.preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.preview.setPixmap(pix)
 
-            if k in (27, ord('q')):     # Quit
-                cv2.destroyWindow(self.win)
-                break
+    # ----------------------------------------------------------
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_image()
 
-            # LEFT ARROW
-            elif k in (81, 2424832, 65361):
-                self.idx = (self.idx - 1) % len(self.files)
+    # ----------------------------------------------------------
+    def prev_img(self):
+        self.idx = (self.idx - 1) % len(self.images)
+        self.update_image()
 
-            # RIGHT ARROW
-            elif k in (83, 2555904, 65363):
-                self.idx = (self.idx + 1) % len(self.files)
+    def next_img(self):
+        self.idx = (self.idx + 1) % len(self.images)
+        self.update_image()
 
-            # Zoom UP/DOWN
-            elif k in (82, 65362):   # UP arrow
-                self.adjust_zoom(+0.1)
-            elif k in (84, 65364):   # DOWN arrow
-                self.adjust_zoom(-0.1)
-
-            # Edit (E key)
-            elif k in (ord('e'), ord('E')):
-                self.open_in_editor()
+    # ----------------------------------------------------------
+    def open_editor(self):
+        editor = ImageEditorWindow(self.images[self.idx])
+        editor.show()
