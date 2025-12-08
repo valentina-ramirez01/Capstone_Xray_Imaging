@@ -218,6 +218,7 @@ class MainWindow(QMainWindow):
 
         # PATCH A4 — banner spam limiter
         self._last_banner_time = 0
+        self._force_banner = False
 
         # --------------------------------------------------------
         # SW2/SW1 input
@@ -471,8 +472,10 @@ class MainWindow(QMainWindow):
         """Prevents banner spam flooding logs every 33ms."""
 
         now = time.time()
-        if now - self._last_banner_time < 0.10:   # PATCH A4 — 100ms rate limit
-            return
+        if not self._force_banner:
+            if now - self._last_banner_time < 0.10:
+                return
+
         self._last_banner_time = now
 
         log_event(f"BANNER: {text}")
@@ -722,7 +725,9 @@ class MainWindow(QMainWindow):
         # UI & LED
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
+        self._force_banner = True
         self.banner("HV On — Taking X-Ray Picture", color="blue")
+        self._force_banner = False
         self.alarm.repaint()
         QApplication.processEvents()
         time.sleep(0.2)
