@@ -7,51 +7,13 @@ import multiprocessing
 
 multiprocessing.current_process().name = "HV_DAEMON"
 
-# ==========================================
-# INSTRUCTIONS FOR IMPLEMENTATION
-# ==========================================
-'''
-1) RUN sudo nano /etc/systemd/system/hv_kill_daemon.service
-
-2) PASTE 
-[Unit]
-Description=High Voltage Safety Kill Daemon
-After=multi-user.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /home/xray_juanito/hv_kill_daemon.py
-
-# Always restart if something goes wrong
-Restart=always
-RestartSec=2
-
-# Run as root (needed to control GPIO safely)
-User=root
-
-# Give daemon access to GPIO and system logs
-WorkingDirectory=/home/xray_juanito
-
-# Prevent service from being killed accidentally
-KillMode=process
-
-[Install]
-WantedBy=multi-user.target
-
-3) Reload systemd with sudo systemctl daemon-reload
-4) Enable daemon with sudo systemctl enable hv_kill_daemon.service
-5) start the daemon sudo systemctl start hv_kill_daemon.service
-6) check status sudo systemctl status hv_kill_daemon.service
-
-'''
-
-# ==========================================
-# SHARED LOGGING CONFIG
-# ==========================================
+# ======================================================
+# LOGGING SETUP
+# ======================================================
 LOG_DIR = "/home/xray_juanito/Capstone_Xray_Imaging/logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-LOG_FILE = f"{LOG_DIR}/interface.log"
+LOG_FILE = f"{LOG_DIR}/hv_daemon.log"
 
 handler = RotatingFileHandler(
     LOG_FILE,
@@ -65,55 +27,113 @@ logging.basicConfig(
     format="%(asctime)s [%(processName)s] %(message)s"
 )
 
-def log_event(msg):
+def log(msg):
     logging.info(msg)
 
-# ==========================================
-# HEARTBEAT SETTINGS
-# ==========================================
+
+# ======================================================
+# FILE PATHS FOR IPC
+# ======================================================
 HEARTBEAT_FILE = "/tmp/xray_heartbeat"
-HEARTBEAT_TIMEOUT = 1   # GUI sends heartbeat every 0.2 sec
+SHUTDOWN_FLAG  = "/tmp/xray_shutdown_flag"
 
-def gui_is_alive():
-    try:
-        with open(HEARTBEAT_FILE, "r") as f:
-            ts = float(f.read().strip())
-        return (time.time() - ts) < HEARTBEAT_TIMEOUT
-    except:
-        return False
+HEARTBEAT_TIMEOUT = 1.0     # GUI sends heartbeat every 0.2 sec
+CHECK_RATE = 0.25           # Poll interval
 
-# ==========================================
-# HV SAFETY LOGIC
-# ==========================================
+
+# ======================================================
+# GPIO CONFIG FOR HV RELAY
+# ======================================================
 HV_PIN = 23
-CHECK_RATE = 1
 
+GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(HV_PIN, GPIO.OUT)
+GPIO.setup(HV_PIN, GPIO.OUT, initial=GPIO.LOW)
 
 def force_hv_off():
     GPIO.output(HV_PIN, GPIO.LOW)
-    log_event("HV forced OFF by daemon")
+    log("HV forced OFF by daemon")
 
-# Always start safe
+
+# ======================================================
+# SAFE SHUTDOWN CHECK
+# ======================================================
+def safe_shutdown_requested() -> bool:
+    return os.path.exists(SHUTDOWN_FLAG)
+
+
+# ======================================================
+# GUI HEARTBEAT CHECK
+# ======================================================
+def gui_is_alive():
+    try:
+        if not os.path.exists(HEARTBEAT_FILE):
+            return False
+        
+        with open(HEARTBEAT_FILE, "r") as f:
+            ts = float(f.read().strip())
+
+        return (time.time() - ts) < HEARTBEAT_TIMEOUT
+
+    except Exception as e:
+        log(f"Heartbeat read error: {e}")
+        return False
+
+
+# ======================================================
+# START STATE
+# ======================================================
 force_hv_off()
-log_event("Daemon started — HV OFF enforced at boot")
+log("HV Daemon started — HV OFF enforced at boot")
 
-# ==========================================
+hv_allowed = True     # Daemon blocks HV only after GUI crash
+
+
+# ======================================================
 # MAIN LOOP
-# ==========================================
+# ======================================================
 while True:
     try:
-        # If HV is ON:
-        if GPIO.input(HV_PIN) == GPIO.HIGH:
-            # If GUI heartbeat is missing → force shutdown
-            if not gui_is_alive():
-                log_event("GUI heartbeat lost while HV ON — forcing OFF")
-                force_hv_off()
+        alive = gui_is_alive()
+        shutdown_mode = safe_shutdown_requested()
+        hv_state = GPIO.input(HV_PIN)   # 1 = ON, 0 = OFF
+
+        # --------------------------------------------------
+        # CASE 1: GUI HEARTBEAT LOST
+        # --------------------------------------------------
+        if not alive:
+            if shutdown_mode:
+                # GUI is intentionally shutting down (safe)
+                log("Daemon: Safe shutdown detected — allowing heartbeat silence")
+            else:
+                # GUI CRASH — emergency shutdown
+                if hv_state == GPIO.HIGH:
+                    log("Daemon: GUI crash → HV ON → FORCE OFF")
+                    force_hv_off()
+
+                if hv_allowed:
+                    log("Daemon: HV interlock engaged (GUI crash mode)")
+                hv_allowed = False
+
+        # --------------------------------------------------
+        # CASE 2: GUI HEARTBEAT PRESENT
+        # --------------------------------------------------
+        else:
+            if not shutdown_mode:
+                if not hv_allowed:
+                    log("Daemon: GUI restart detected — HV interlock reset")
+                hv_allowed = True
+
+        # --------------------------------------------------
+        # CASE 3: Enforce HV safety rule
+        # --------------------------------------------------
+        if hv_state == GPIO.HIGH and not hv_allowed:
+            log("Daemon: HV ON while not allowed → forcing OFF")
+            force_hv_off()
 
         time.sleep(CHECK_RATE)
 
     except Exception as e:
-        log_event(f"Daemon error: {e} — forcing HV OFF")
+        log(f"Daemon runtime error: {e} — forcing HV off for safety")
         force_hv_off()
         time.sleep(CHECK_RATE)

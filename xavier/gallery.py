@@ -15,30 +15,36 @@ from xavier.tools import apply_contrast_brightness, apply_zoom, fit_in_window
 
 
 # =====================================================================
-#   PYQT6 IMAGE EDITOR WINDOW
+#   PYQT6 IMAGE EDITOR WINDOW  —  FIXED SIZE + PROPER SCALING
 # =====================================================================
 class ImageEditorWindow(QWidget):
     def __init__(self, img_path: str):
         super().__init__()
 
         self.setWindowTitle("Edit Image")
-        self.resize(800, 600)
+
+        # FIX: start at a reasonable size
+        self.setMinimumSize(400, 300)
+        self.resize(900, 700)       # safe size, not fullscreen
 
         self.img_path = img_path
         self.original = cv2.imread(img_path)
+
         if self.original is None:
             QMessageBox.critical(self, "Error", f"Could not read {img_path}")
             self.close()
             return
 
-        # Working copy parameters
-        self.alpha = 1.0     # contrast
-        self.beta = 0        # brightness
+        # Working parameters
+        self.alpha = 1.0
+        self.beta = 0
 
-        # UI Layout
-        self.preview = QLabel("Preview")
+        # UI
+        self.preview = QLabel("")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setStyleSheet("background-color:black;")
 
+        # Buttons
         btn_inc_con = QPushButton("Contrast +")
         btn_dec_con = QPushButton("Contrast -")
         btn_inc_bri = QPushButton("Brightness +")
@@ -53,29 +59,43 @@ class ImageEditorWindow(QWidget):
         btn_save.clicked.connect(self.save_copy)
         btn_close.clicked.connect(self.close)
 
+        # Layout
         controls = QHBoxLayout()
         for b in (btn_inc_con, btn_dec_con, btn_inc_bri, btn_dec_bri, btn_save, btn_close):
             controls.addWidget(b)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.preview, 1)
+        layout.addWidget(self.preview, stretch=1)
         layout.addLayout(controls)
 
+        # Render for first time
         self.update_preview()
 
-    # --------------------------------------------------------------
+    # ------------------------------------------------------------------
     def update_preview(self):
+        """
+        Apply edits and scale image using the SAME method as gallery: fit_in_window.
+        """
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
-        h, w = edited.shape[:2]
-        qimg = QImage(edited.data, w, h, 3*w, QImage.Format.Format_BGR888)
-        px = QPixmap.fromImage(qimg).scaled(
-            self.preview.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.preview.setPixmap(px)
 
-    # --------------------------------------------------------------
+        # SCALE using fit_in_window() just like gallery
+        win_w = self.preview.width()
+        win_h = self.preview.height()
+        if win_w < 50 or win_h < 50:
+            win_w, win_h = 200, 200
+
+        disp = fit_in_window(edited, win_w, win_h)
+
+        h, w = disp.shape[:2]
+        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
+        self.preview.setPixmap(QPixmap.fromImage(qimg))
+
+    # FIX: Update preview live when window is resized
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_preview()
+
+    # ------------------------------------------------------------------
     def adjust_contrast(self, da):
         self.alpha = float(np.clip(self.alpha + da, 0.1, 5.0))
         self.update_preview()
@@ -84,7 +104,7 @@ class ImageEditorWindow(QWidget):
         self.beta = float(np.clip(self.beta + db, -100, 100))
         self.update_preview()
 
-    # --------------------------------------------------------------
+    # ------------------------------------------------------------------
     def save_copy(self):
         base_dir = os.path.dirname(self.img_path)
         n = len(glob.glob(os.path.join(base_dir, "edited_*.png")))
@@ -93,7 +113,6 @@ class ImageEditorWindow(QWidget):
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
         cv2.imwrite(out_path, edited)
         QMessageBox.information(self, "Saved", f"Edited copy saved:\n{out_path}")
-
 
 # =====================================================================
 #   MAIN GALLERY (OpenCV Window)

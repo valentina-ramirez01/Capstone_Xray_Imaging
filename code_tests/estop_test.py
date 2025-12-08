@@ -1,7 +1,16 @@
-import RPi.GPIO as GPIO, time
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(26, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+import RPi.GPIO as GPIO
+import time
 
-while True:
-    print(GPIO.input(26))
-    time.sleep(0.1)
+PIN = 22
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+print("Reading GPIO 22 with ONLY internal pull-up, nothing connected...")
+try:
+    while True:
+        print(GPIO.input(PIN))
+        time.sleep(0.2)
+except KeyboardInterrupt:
+    GPIO.cleanup()
+    print("Done.")

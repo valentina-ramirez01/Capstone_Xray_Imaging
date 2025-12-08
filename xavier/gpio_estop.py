@@ -6,7 +6,7 @@ import RPi.GPIO as GPIO
 # ============================================================
 # CONFIG — Your E-STOP is Normally Open (NO)
 # ============================================================
-PIN_ESTOP = 26            # GPIO pin for NO switch
+PIN_ESTOP = 22            # GPIO pin for NO switch
 DEBOUNCE_S = 0.02         # debounce for stable reads
 
 # ============================================================
