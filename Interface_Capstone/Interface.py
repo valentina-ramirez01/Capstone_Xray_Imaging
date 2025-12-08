@@ -1,7 +1,6 @@
 import sys
 import time
 import os
-import time
 from pathlib import Path
 
 _here = Path(__file__).resolve()
@@ -39,7 +38,7 @@ from xavier.stepper_Motor import (
 ser = serial.Serial("/dev/ttyACM0", 115200, timeout=0.01)
 from xavier.camera_picam2 import Picamera2
 
-# ⭐ NEW: E-STOP module (final version)
+# ⭐ NEW: E-STOP module
 from xavier import gpio_estop
 
 # =====================================================
@@ -47,7 +46,6 @@ from xavier import gpio_estop
 # =====================================================
 import logging
 from logging.handlers import RotatingFileHandler
-import os
 
 LOG_DIR = "/home/xray_juanito/Capstone_Xray_Imaging/logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -80,9 +78,8 @@ class PiCamBackend:
         self.still_size   = still_size
         self.cam: Picamera2 | None = None
         self._mode = "stopped"
-        self.ready = False  # PATCH A1 — backend state tracking
+        self.ready = False  # PATCH A1
 
-    # -------------------------------------------------
     def start(self):
         """Start camera safely."""
         try:
@@ -98,14 +95,14 @@ class PiCamBackend:
             self.cam.configure(self.preview_cfg)
             self.cam.start()
             self._mode = "preview"
-            self.ready = True              # PATCH A1
+            self.ready = True
             time.sleep(0.15)
+
         except Exception as e:
             self.ready = False
             log_event(f"PATCH A1 — Camera failed to start: {e}")
             raise
 
-    # -------------------------------------------------
     def stop(self):
         """Stop camera safely."""
         try:
@@ -116,45 +113,41 @@ class PiCamBackend:
                 except: pass
         finally:
             self.cam = None
-            self.ready = False             # PATCH A1
+            self.ready = False
             self._mode = "stopped"
             time.sleep(0.2)
 
-    # -------------------------------------------------
     def ensure_running(self):
         """PATCH A1 — Guarantee camera is active."""
         if not self.ready or self.cam is None:
             log_event("PATCH A1 — Camera backend restarting (ensure_running)")
             self.start()
 
-    # -------------------------------------------------
     def grab_gray(self):
-        self.ensure_running()              # PATCH A1
+        self.ensure_running()
 
         if self._mode != "preview":
             self.cam.switch_mode(self.preview_cfg)
             self._mode = "preview"
             time.sleep(0.05)
 
-        frame = self.cam.capture_array("main")  # PATCH A3 safe
+        frame = self.cam.capture_array("main")
         return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
-    # -------------------------------------------------
     def grab_bgr(self):
-        self.ensure_running()              # PATCH A1
+        self.ensure_running()
 
         if self._mode != "preview":
             self.cam.switch_mode(self.preview_cfg)
             self._mode = "preview"
             time.sleep(0.05)
 
-        frame = self.cam.capture_array("main")  # PATCH A3 safe
+        frame = self.cam.capture_array("main")
         return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-    # -------------------------------------------------
     def capture_xray_fixed(self):
         """Still capture with manual exposure."""
-        self.ensure_running()              # PATCH A2
+        self.ensure_running()
 
         cfg = self.cam.create_still_configuration(
             main={"size": self.still_size},
@@ -166,7 +159,6 @@ class PiCamBackend:
             }
         )
 
-        # Enter still mode
         self.cam.stop()
         self.cam.configure(cfg)
         self.cam.start()
@@ -174,7 +166,7 @@ class PiCamBackend:
 
         frame = self.cam.capture_array("main")
 
-        # PATCH A8 — return to preview mode safely
+        # Return to preview
         self.cam.stop()
         self.cam.configure(self.preview_cfg)
         self.cam.start()
@@ -211,16 +203,13 @@ class MainWindow(QMainWindow):
         self.has_closed_once = False
         self.has_started     = False
         self.hv_active       = False
-        self.xraying         = False   # ⭐ Prevent alignment overwrites
+        self.xraying         = False     # ⭐ Needed to protect XRAY banner
 
-        # PATCH A6 — Track preview state before E-STOP
         self.preview_was_running_before_estop = False
-
-        # PATCH A4 — banner spam limiter
-        self._last_banner_time = 0
+        self._last_banner_time = 0  # Patch A4
 
         # --------------------------------------------------------
-        # SW2/SW1 input
+        # SW inputs
         # --------------------------------------------------------
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -235,12 +224,12 @@ class MainWindow(QMainWindow):
         # --------------------------------------------------------
         # UI Setup
         # --------------------------------------------------------
-        self.alarm = QLabel("System Ready", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.alarm = QLabel("System Ready", alignment=Qt.AlignCenter)
         self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
 
-        self.view = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.view = QLabel("Camera", alignment=Qt.AlignCenter)
 
-        # CONTROL BUTTONS
+        # Buttons
         self.btn_open   = QPushButton("OPEN")
         self.btn_close  = QPushButton("CLOSE")
         self.btn_rotate = QPushButton("Rotate 45°")
@@ -253,7 +242,7 @@ class MainWindow(QMainWindow):
         self.btn_show_last = QPushButton("Show Last X-ray")
         self.btn_shutdown = QPushButton("Shutdown System")
         self.btn_shutdown.setStyleSheet(
-            "background-color: #D32F2F; color: white; font-weight: bold; font-size: 18px; padding: 10px;"
+            "background-color:#D32F2F;color:white;font-weight:bold;font-size:18px;padding:10px;"
         )
 
         central = QWidget()
@@ -261,8 +250,7 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
 
         for b in (
-            self.btn_preview, self.btn_stop,
-            self.btn_xray,
+            self.btn_preview, self.btn_stop, self.btn_xray,
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
             self.btn_gallery, self.btn_show_last,
@@ -287,7 +275,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self.showFullScreen)
 
         # --------------------------------------------------------
-        # Connect buttons
+        # Connect button signals
         # --------------------------------------------------------
         self.btn_open.clicked.connect(self.on_open)
         self.btn_close.clicked.connect(self.on_close)
@@ -302,7 +290,7 @@ class MainWindow(QMainWindow):
         self.btn_shutdown.clicked.connect(self.close)
 
         # --------------------------------------------------------
-        # PATCH B1 — Detect tray position
+        # Detect tray position on startup
         # --------------------------------------------------------
         sw1 = GPIO.input(17)
         sw2 = GPIO.input(18)
@@ -314,7 +302,7 @@ class MainWindow(QMainWindow):
             self.all_leds_off()
             self.leds.write(self.leds.amber, True)
             self.banner("Tray Open — Insert Sample", color="yellow")
-            log_event("PATCH B1 — Startup detected: TRAY OPEN")
+            log_event("Startup: tray open")
 
         elif sw2 == 0:
             self.has_started = True
@@ -323,7 +311,7 @@ class MainWindow(QMainWindow):
             self.all_leds_off()
             self.leds.write(self.leds.green, True)
             self.banner("Sample Aligned — Ready for X-Ray", color="green")
-            log_event("PATCH B1 — Startup detected: TRAY CLOSED")
+            log_event("Startup: tray closed")
 
         else:
             self.has_started = True
@@ -332,12 +320,11 @@ class MainWindow(QMainWindow):
             self.all_leds_off()
             self.leds.write(self.leds.amber, True)
             self.banner("Tray Position Unknown — Please CLOSE Tray", color="yellow")
-            log_event("PATCH B1 — Startup detected: TRAY UNKNOWN")
 
         # --------------------------------------------------------
         # Timers
         # --------------------------------------------------------
-        self	timer = QTimer(self)
+        self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.update_frame)
 
@@ -349,7 +336,7 @@ class MainWindow(QMainWindow):
         self.align_timer.setInterval(100)
         self.align_timer.timeout.connect(self.check_alignment)
 
-        # HEARTBEAT
+        # Heartbeat
         self.heartbeat_timer = QTimer(self)
         self.heartbeat_timer.setInterval(200)
         self.heartbeat_timer.timeout.connect(self.send_heartbeat)
@@ -357,12 +344,9 @@ class MainWindow(QMainWindow):
 
         self.all_leds_off()
 
-        # --------------------------------------------------------
         # Start E-STOP monitoring
-        # --------------------------------------------------------
         gpio_estop.start_monitor(self.handle_estop_fault,
                                  self.handle_estop_release)
-
     # ============================================================
     # HEARTBEAT WRITER
     # ============================================================
@@ -374,7 +358,7 @@ class MainWindow(QMainWindow):
             pass
 
     # ============================================================
-    # E-STOP: PRESS HANDLER
+    # E-STOP: PRESS HANDLER (banner-safe)
     # ============================================================
     def handle_estop_fault(self):
 
@@ -395,9 +379,9 @@ class MainWindow(QMainWindow):
         self.all_leds_off()
         self.leds.write(self.leds.red, True)
 
+        # GUI-thread safe banner update
         def gui_updates():
             self.banner("E-STOP PRESSED — SYSTEM HALTED", color="red")
-
             for b in (
                 self.btn_open, self.btn_close,
                 self.btn_rotate, self.btn_home3,
@@ -408,20 +392,19 @@ class MainWindow(QMainWindow):
                 b.setEnabled(False)
 
         QTimer.singleShot(0, gui_updates)
-
         log_event("E-STOP PRESSED — SYSTEM HALTED")
 
     # ============================================================
-    # E-STOP: RELEASE HANDLER
+    # E-STOP: RELEASE HANDLER (banner-safe)
     # ============================================================
     def handle_estop_release(self):
 
-        log_event("E-STOP released — system re-enabled")
+        log_event("E-STOP released — re-enabling system")
 
         try:
             self.backend.start()
         except Exception as e:
-            log_event(f"Camera restart after E-STOP failed: {e}")
+            log_event(f"E-STOP CAMERA RESTART ERROR: {e}")
 
         QTimer.singleShot(0, self.adc_timer.start)
         QTimer.singleShot(0, self.align_timer.start)
@@ -457,7 +440,7 @@ class MainWindow(QMainWindow):
         self.leds.write(self.leds.blue, False)
 
     # ============================================================
-    # BANNER DISPLAY
+    # BANNER DISPLAY (rate limited)
     # ============================================================
     def banner(self, text, color=None):
 
@@ -481,6 +464,8 @@ class MainWindow(QMainWindow):
 
         self.alarm.setStyleSheet(st)
         self.alarm.setText(text)
+        self.alarm.repaint()
+        QApplication.processEvents()   # ⭐ ensure it draws
 
     # ============================================================
     # ADC SAFETY SYSTEM
@@ -493,10 +478,11 @@ class MainWindow(QMainWindow):
         hv = read_hv_voltage()
         ok, msg = hv_status_ok(hv)
 
-        log_event(f"ADC CHECK — HV reading: {hv:.2f} V")
+        log_event(f"ADC CHECK: HV={hv:.2f} V")
 
         if not ok:
-            log_event(f"HV FAULT DETECTED — {msg} — HV OFF triggered")
+            log_event(f"HV FAULT — {msg}")
+
             self.hv_fault_active = True
             hv_off()
             self.hv_active = False
@@ -518,7 +504,7 @@ class MainWindow(QMainWindow):
             return
 
         if self.hv_fault_active:
-            log_event("HV SAFETY RECOVERY — HV back within safe limits")
+            log_event("HV Fault cleared")
 
         self.hv_fault_active = False
 
@@ -536,7 +522,7 @@ class MainWindow(QMainWindow):
     # ============================================================
     def check_alignment(self):
 
-        # ⭐ Prevent overwriting XRAY banner
+        # ⭐ DO NOT overwrite XRAY banner
         if self.xraying:
             return
 
@@ -553,7 +539,6 @@ class MainWindow(QMainWindow):
             self.all_leds_off()
             self.leds.write(self.leds.amber, True)
             self.banner("Tray Open — Insert Sample", color="yellow")
-            log_event("Tray opened")
             return
 
         sw2 = GPIO.input(18)
@@ -563,19 +548,17 @@ class MainWindow(QMainWindow):
             self.all_leds_off()
             self.leds.write(self.leds.green, True)
             self.banner("Sample Aligned — Ready for X-Ray", color="green")
-            log_event("Sample aligned — SW2 engaged")
         else:
             self.armed = False
             self.all_leds_off()
             self.leds.write(self.leds.amber, True)
             self.banner("Tray Closing…", color="yellow")
-            log_event("Tray closing")
 
     # ============================================================
     # TRAY OPEN
     # ============================================================
     def on_open(self):
-        log_event("Tray opening — user pressed OPEN")
+        log_event("Tray OPEN clicked")
 
         if self.hv_fault_active:
             return
@@ -595,7 +578,7 @@ class MainWindow(QMainWindow):
     # TRAY CLOSE
     # ============================================================
     def on_close(self):
-        log_event("Tray closing — user pressed CLOSE")
+        log_event("Tray CLOSE clicked")
 
         if self.hv_fault_active:
             return
@@ -612,14 +595,16 @@ class MainWindow(QMainWindow):
     # ROTATE 45°
     # ============================================================
     def on_rotate45(self):
-        log_event("Rotate 45° requested")
+        log_event("Rotate 45° clicked")
 
         if not self.has_closed_once or not self.armed:
-            QMessageBox.warning(self, "Tray Not Closed", "You must CLOSE the tray before rotating.")
+            QMessageBox.warning(self, "Tray Not Closed",
+                                "You must CLOSE the tray before rotating.")
             return
 
         if self.hv_fault_active:
-            QMessageBox.warning(self, "HV Fault", "Cannot rotate while HV fault is active.")
+            QMessageBox.warning(self, "HV Fault",
+                                "Cannot rotate while HV fault is active.")
             return
 
         motor3_rotate_45()
@@ -628,7 +613,7 @@ class MainWindow(QMainWindow):
     # HOME ROTATION
     # ============================================================
     def on_home3(self):
-        log_event("Motor 3 going HOME")
+        log_event("Home Rotation clicked")
 
         if not self.hv_fault_active:
             motor3_home()
@@ -651,8 +636,7 @@ class MainWindow(QMainWindow):
     # STOP BUTTON
     # ============================================================
     def on_stop(self):
-
-        log_event("STOP pressed — shutting down preview/camera/HV")
+        log_event("STOP pressed")
 
         self.preview_on = False
         try: self.timer.stop()
@@ -665,10 +649,10 @@ class MainWindow(QMainWindow):
         self.banner("STOPPED", color="red")
 
     # ============================================================
-    # XRAY CAPTURE
+    # ⭐ XRAY CAPTURE — FIXED BLUE BANNER + FIXED OVERWRITES
     # ============================================================
     def on_xray(self):
-        log_event("XRAY capture initiated — HV ON requested")
+        log_event("XRAY capture initiated")
 
         if self.hv_fault_active:
             QMessageBox.warning(self, "HV Fault", "Unsafe HV level detected.")
@@ -678,30 +662,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Not Aligned", "Tray must be fully closed.")
             return
 
-        # ⭐ Prevent alignment banner from overwriting XRAY banner
+        # BLOCK alignment overwrites
         self.xraying = True
 
-        # ------------------------------------------------------------------
-        # ⭐ DISPLAY BLUE BANNER *BEFORE* THE LONG BLOCKING XRAY OPERATIONS
-        # ------------------------------------------------------------------
+        # ⭐ Set LED + banner BEFORE blocking
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
 
         self.banner("HV On — Taking X-Ray Picture", color="blue")
-        self.alarm.repaint()
+        QApplication.processEvents()  # ⭐ MUST HAVE
 
-        # ⭐ Force Qt to actually draw the banner BEFORE the thread blocks
-        QApplication.processEvents()
-        QTimer.singleShot(5, lambda: None)
-        QApplication.processEvents()
-        # ------------------------------------------------------------------
-
-        # (Your original sleep remains untouched)
         time.sleep(0.2)
 
-        # ============================================================
         # XRAY SEQUENCE
-        # ============================================================
         try:
             self.hv_active = True
             hv_on()
@@ -716,69 +689,65 @@ class MainWindow(QMainWindow):
             self.xraying = False
 
             QMessageBox.critical(self, "Error",
-                                 "Camera failure — HV turned OFF for safety.")
+                                 "Camera failure — HV OFF for safety.")
             log_event(f"XRAY ERROR: {e}")
             return
 
         finally:
             hv_off()
-            log_event("HV OFF — XRAY sequence completed")
             self.hv_active = False
 
-        # ⭐ XRAY done — allow alignment banners again
+        # Done XRAY
         self.xraying = False
 
-        # ============================================================
-        # UI Reset After XRAY
-        # ============================================================
+        # UI Reset
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
-
         self.banner("Sample Aligned — Ready for X-Ray", color="green")
 
         # Save image
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = (
-            f"/home/xray_juanito/Capstone_Xray_Imaging/captures/"
-            f"capture_{timestamp}.jpg"
-        )
+        filename = f"/home/xray_juanito/Capstone_Xray_Imaging/captures/capture_{timestamp}.jpg"
         cv2.imwrite(filename, img)
-        log_event(f"X-ray saved: {filename}")
+        log_event(f"Saved X-ray: {filename}")
 
-        # Display on screen
+        # Display
         disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = disp.shape[:2]
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
         )
         self.view.setPixmap(px)
-
 
     # ============================================================
     # SHOW LAST CAPTURE
     # ============================================================
     def on_show_last(self):
-        log_event("User requested last X-ray preview")
+        log_event("Show Last clicked")
 
         if self.hv_fault_active:
             return
 
         if self.preview_on:
-            QMessageBox.warning(self,"Preview Active","Turn OFF preview first.")
+            QMessageBox.warning(self, "Preview Active",
+                                "Turn OFF preview first.")
             return
 
-        import glob, os
+        import glob
         base = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
 
-        files = glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png")
+        files = sorted(
+            glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png"),
+            key=os.path.getmtime
+        )
+
         if not files:
-            QMessageBox.warning(self,"No Images","None found.")
+            QMessageBox.warning(self, "No Images", "None found.")
             return
 
-        files = sorted(files, key=os.path.getmtime)
         last_file = files[-1]
 
         img = cv2.imread(last_file)
@@ -787,14 +756,13 @@ class MainWindow(QMainWindow):
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_RGB888)
         px = QPixmap.fromImage(qimg).scaled(
             self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
         )
         self.view.setPixmap(px)
 
         self.banner("Showing Last X-Ray", color="yellow")
-        log_event(f"Showing last X-Ray: {last_file}")
-
+        log_event(f"Showing last X-ray: {last_file}")
 
     # ============================================================
     # EXPORT FRAME
@@ -806,17 +774,18 @@ class MainWindow(QMainWindow):
             filename = capture_and_save_frame(frame, save_dir="captures")
             self.status.showMessage(f"Saved {filename}")
         except Exception as e:
-            QMessageBox.critical(self, "Export", str(e))
-
+            QMessageBox.critical(self, "Export Error", str(e))
 
     # ============================================================
-    # GALLERY WINDOW
+    # GALLERY
     # ============================================================
     def on_gallery(self):
         log_event("Gallery opened")
 
         base_dir = Path("/home/xray_juanito/Capstone_Xray_Imaging/captures")
-        all_imgs = sorted(list(base_dir.glob("*.jpg")) + list(base_dir.glob("*.png")))
+        all_imgs = sorted(
+            list(base_dir.glob("*.jpg")) + list(base_dir.glob("*.png"))
+        )
 
         if not all_imgs:
             QMessageBox.information(self, "Gallery", "No images found.")
@@ -824,15 +793,17 @@ class MainWindow(QMainWindow):
 
         Gallery([str(p) for p in all_imgs]).run()
 
-
     # ============================================================
-    # IMAGE EDITOR
+    # EDITOR
     # ============================================================
     def on_editor(self):
 
         import glob
         base = "/home/xray_juanito/Capstone_Xray_Imaging/captures"
-        files = sorted(glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png"))
+
+        files = sorted(
+            glob.glob(base+"/*.jpg") + glob.glob(base+"/*.png")
+        )
 
         if not files:
             QMessageBox.warning(self, "No Images", "None to edit.")
@@ -841,94 +812,12 @@ class MainWindow(QMainWindow):
         last = files[-1]
         self.editor_window = ImageEditorWindow(last)
 
-        self.editor_window.setWindowFlag(Qt.WindowType.Window, True)
+        self.editor_window.setWindowFlag(Qt.Window, True)
         self.editor_window.setGeometry(200, 200, 900, 700)
-
         self.editor_window.show()
 
         self.banner("Editing Image", color="yellow")
         log_event(f"Editor opened for {last}")
-
-
-    # ============================================================
-    # SHUTDOWN LOGIC
-    # ============================================================
-    def on_shutdown_clicked(self):
-        reply = QMessageBox.question(
-            self,
-            "Confirm Shutdown",
-            "Are you sure you want to shutdown the entire system?\n"
-            "This will close the GUI, home the motors, and turn the Raspberry Pi OFF.",
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        if reply == QMessageBox.Yes:
-            self.perform_system_shutdown()
-
-
-    def perform_system_shutdown(self):
-        log_event("Shutdown button clicked — initiating safe sequence")
-
-        try:
-            with open("/tmp/xray_shutdown_flag", "w") as f:
-                f.write("1")
-            log_event("Shutdown flag written")
-        except Exception as e:
-            log_event(f"Error writing shutdown flag: {e}")
-
-        try:
-            hv_off()
-            log_event("HV OFF for shutdown")
-        except:
-            pass
-
-        try:
-            motor3_home()
-            log_event("Motor3 homed for shutdown")
-        except:
-            pass
-
-        try:
-            motor1_forward_until_switch2()
-            log_event("Tray closed for shutdown")
-        except:
-            pass
-
-        log_event("Closing GUI for system shutdown")
-        QApplication.processEvents()
-        self.close()
-
-        os.system("sudo shutdown -h now")
-
-
-    # ============================================================
-    # PREVIEW FRAME UPDATE
-    # ============================================================
-    def update_frame(self):
-
-        if not self.preview_on:
-            return
-
-        if not self.backend.ready:
-            log_event("update_frame skipped — backend not ready")
-            return
-
-        try:
-            gray = self.backend.grab_gray()
-        except Exception as e:
-            log_event(f"grab_gray failed: {e}")
-            return
-
-        disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        h, w = disp.shape[:2]
-        qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
-        px = QPixmap.fromImage(qimg).scaled(
-            self.view.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.view.setPixmap(px)
-
 
     # ============================================================
     # CLOSE EVENT — SAFE SHUTDOWN
@@ -940,27 +829,17 @@ class MainWindow(QMainWindow):
         try:
             with open("/tmp/xray_shutdown_flag", "w") as f:
                 f.write("1")
-            log_event("Shutdown: wrote flag")
-        except Exception as e:
-            log_event(f"Could not write shutdown flag: {e}")
-
-        try:
-            hv_off()
-            log_event("Shutdown: HV OFF")
         except:
             pass
 
-        try:
-            motor3_home()
-            log_event("Shutdown: Motor3 homed")
-        except:
-            pass
+        try: hv_off()
+        except: pass
 
-        try:
-            motor1_forward_until_switch2()
-            log_event("Shutdown: Motor1 CLOSED (SW2)")
-        except:
-            pass
+        try: motor3_home()
+        except: pass
+
+        try: motor1_forward_until_switch2()
+        except: pass
 
         try: gpio_estop.stop_monitor()
         except: pass
@@ -974,11 +853,9 @@ class MainWindow(QMainWindow):
         try: self.backend.stop()
         except: pass
 
-        try:
-            self.all_leds_off()
-            self.leds.cleanup()
-        except:
-            pass
+        self.all_leds_off()
+        try: self.leds.cleanup()
+        except: pass
 
         super().closeEvent(event)
 
