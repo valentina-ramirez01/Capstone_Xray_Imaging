@@ -254,6 +254,11 @@ class MainWindow(QMainWindow):
         self.btn_gallery = QPushButton("Gallery")
         self.btn_editor  = QPushButton("Editor")
         self.btn_show_last = QPushButton("Show Last X-ray")
+        self.btn_shutdown = QPushButton("Shutdown System")
+        self.btn_shutdown.setStyleSheet(
+            "background-color: #D32F2F; color: white; font-weight: bold; font-size: 18px; padding: 10px;"
+        )
+
 
         central = QWidget()
         root = QHBoxLayout(central)
@@ -265,7 +270,7 @@ class MainWindow(QMainWindow):
             self.btn_open, self.btn_close,
             self.btn_rotate, self.btn_home3,
             self.btn_gallery, self.btn_show_last,
-            self.btn_editor
+            self.btn_editor, self.btn_shutdown
         ):
             left.addWidget(b)
 
@@ -298,6 +303,7 @@ class MainWindow(QMainWindow):
         self.btn_gallery.clicked.connect(self.on_gallery)
         self.btn_show_last.clicked.connect(self.on_show_last)
         self.btn_editor.clicked.connect(self.on_editor)
+        self.btn_shutdown.clicked.connect(self.close)
 
         # --------------------------------------------------------
         # PATCH B1 — Detect tray position (SW1 = open, SW2 = closed)
@@ -403,7 +409,7 @@ class MainWindow(QMainWindow):
             self.btn_rotate, self.btn_home3,
             self.btn_preview, self.btn_xray,
             self.btn_gallery, self.btn_show_last,
-            self.btn_editor
+            self.btn_editor, self.btn_shutdown
         ):
             b.setEnabled(False)
 
@@ -423,7 +429,7 @@ class MainWindow(QMainWindow):
             self.btn_rotate, self.btn_home3,
             self.btn_preview, self.btn_xray, self.btn_stop,
             self.btn_gallery, self.btn_show_last,
-            self.btn_editor
+            self.btn_editor, self.btn_shutdown
         ):
             b.setEnabled(True)
 
@@ -516,7 +522,9 @@ class MainWindow(QMainWindow):
                 self.btn_rotate, self.btn_home3,
                 self.btn_xray, self.btn_preview,
                 self.btn_stop, self.btn_gallery,
-                self.btn_show_last, self.btn_editor
+                self.btn_show_last, self.btn_editor,
+                self.btn_shutdown
+
             ):
                 b.setEnabled(False)
 
@@ -534,7 +542,7 @@ class MainWindow(QMainWindow):
             self.btn_rotate, self.btn_home3,
             self.btn_xray, self.btn_preview,
             self.btn_gallery, self.btn_show_last,
-            self.btn_editor
+            self.btn_editor, self.btn_shutdown,
         ):
             b.setEnabled(True)
 
@@ -715,7 +723,9 @@ class MainWindow(QMainWindow):
         self.all_leds_off()
         self.leds.write(self.leds.blue, True)
         self.banner("HV On — Taking X-Ray Picture", color="blue")
+        self.alarm.repaint()
         QApplication.processEvents()
+        time.sleep(0.2)
 
         # XRAY SEQUENCE
         try:
@@ -864,7 +874,60 @@ class MainWindow(QMainWindow):
         self.banner("Editing Image", color="yellow")
         log_event(f"Editor opened for {last}")
 
+    # ============================================================
+    # Shutdown
+    # ============================================================
+    def on_shutdown_clicked(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Shutdown",
+            "Are you sure you want to shutdown the entire system?\n"
+            "This will close the GUI, home the motors, and turn the Raspberry Pi OFF.",
+            QMessageBox.Yes | QMessageBox.No
+        )
 
+        if reply == QMessageBox.Yes:
+            self.perform_system_shutdown()
+
+
+    def perform_system_shutdown(self):
+        log_event("Shutdown button clicked — initiating safe sequence")
+
+        # 1. Write shutdown flag for daemon
+        try:
+            with open("/tmp/xray_shutdown_flag", "w") as f:
+                f.write("1")
+            log_event("Shutdown flag written")
+        except Exception as e:
+            log_event(f"Error writing shutdown flag: {e}")
+
+        # 2. Turn HV off
+        try:
+            hv_off()
+            log_event("HV OFF for shutdown")
+        except:
+            pass
+
+        # 3. Home motors
+        try:
+            motor3_home()
+            log_event("Motor3 homed for shutdown")
+        except:
+            pass
+
+        try:
+            motor1_forward_until_switch2()
+            log_event("Tray closed for shutdown")
+        except:
+            pass
+
+        # 4. Close GUI
+        log_event("Closing GUI for system shutdown")
+        QApplication.processEvents()
+        self.close()
+
+        # 5. Shutdown OS
+        os.system("sudo shutdown -h now")
 
     # ============================================================
     # PREVIEW FRAME UPDATE (PATCH A7 — safeguard backend)
