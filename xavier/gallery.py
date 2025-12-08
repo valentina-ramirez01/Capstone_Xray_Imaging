@@ -6,7 +6,7 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QMessageBox, QSlider
+    QFileDialog, QMessageBox
 )
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtCore import Qt
@@ -15,17 +15,15 @@ from xavier.tools import apply_contrast_brightness, apply_zoom, fit_in_window
 
 
 # =====================================================================
-#   PYQT6 IMAGE EDITOR WINDOW  —  FIXED SIZE + PROPER SCALING
+#   PYQT6 IMAGE EDITOR WINDOW  —  FIXED SIZE + PERFECT SCALING
 # =====================================================================
 class ImageEditorWindow(QWidget):
     def __init__(self, img_path: str):
         super().__init__()
 
         self.setWindowTitle("Edit Image")
-
-        # FIX: start at a reasonable size
         self.setMinimumSize(400, 300)
-        self.resize(900, 700)       # safe size, not fullscreen
+        self.resize(900, 700)
 
         self.img_path = img_path
         self.original = cv2.imread(img_path)
@@ -39,10 +37,11 @@ class ImageEditorWindow(QWidget):
         self.alpha = 1.0
         self.beta = 0
 
-        # UI
+        # PREVIEW LABEL — center + prevent stretching
         self.preview = QLabel("")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setStyleSheet("background-color:black;")
+        self.preview.setScaledContents(False)
 
         # Buttons
         btn_inc_con = QPushButton("Contrast +")
@@ -59,7 +58,6 @@ class ImageEditorWindow(QWidget):
         btn_save.clicked.connect(self.save_copy)
         btn_close.clicked.connect(self.close)
 
-        # Layout
         controls = QHBoxLayout()
         for b in (btn_inc_con, btn_dec_con, btn_inc_bri, btn_dec_bri, btn_save, btn_close):
             controls.addWidget(b)
@@ -68,21 +66,14 @@ class ImageEditorWindow(QWidget):
         layout.addWidget(self.preview, stretch=1)
         layout.addLayout(controls)
 
-        # Render for first time
         self.update_preview()
 
     # ------------------------------------------------------------------
     def update_preview(self):
-        """
-        Apply edits and scale image using the SAME method as gallery: fit_in_window.
-        """
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
 
-        # SCALE using fit_in_window() just like gallery
-        win_w = self.preview.width()
-        win_h = self.preview.height()
-        if win_w < 50 or win_h < 50:
-            win_w, win_h = 200, 200
+        win_w = max(self.preview.width(), 100)
+        win_h = max(self.preview.height(), 100)
 
         disp = fit_in_window(edited, win_w, win_h)
 
@@ -90,12 +81,10 @@ class ImageEditorWindow(QWidget):
         qimg = QImage(disp.data, w, h, 3*w, QImage.Format.Format_BGR888)
         self.preview.setPixmap(QPixmap.fromImage(qimg))
 
-    # FIX: Update preview live when window is resized
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_preview()
 
-    # ------------------------------------------------------------------
     def adjust_contrast(self, da):
         self.alpha = float(np.clip(self.alpha + da, 0.1, 5.0))
         self.update_preview()
@@ -104,18 +93,19 @@ class ImageEditorWindow(QWidget):
         self.beta = float(np.clip(self.beta + db, -100, 100))
         self.update_preview()
 
-    # ------------------------------------------------------------------
     def save_copy(self):
-        base_dir = os.path.dirname(self.img_path)
-        n = len(glob.glob(os.path.join(base_dir, "edited_*.png")))
-        out_path = os.path.join(base_dir, f"edited_{n:04d}.png")
+        base = os.path.dirname(self.img_path)
+        n = len(glob.glob(os.path.join(base, "edited_*.png")))
+        out = os.path.join(base, f"edited_{n:04d}.png")
 
         edited = apply_contrast_brightness(self.original, self.alpha, self.beta)
-        cv2.imwrite(out_path, edited)
-        QMessageBox.information(self, "Saved", f"Edited copy saved:\n{out_path}")
+        cv2.imwrite(out, edited)
+
+        QMessageBox.information(self, "Saved", f"Saved:\n{out}")
+
 
 # =====================================================================
-#   MAIN GALLERY (OpenCV Window)
+#   MAIN GALLERY (OpenCV Window) — FIXED ASPECT RATIO
 # =====================================================================
 class Gallery:
     """
@@ -136,9 +126,6 @@ class Gallery:
 
     # ---------------- USER ACTION HOOK ----------------
     def open_in_editor(self):
-        """
-        Launch PyQt6 editor for the current image.
-        """
         path = self.files[self.idx]
         editor = ImageEditorWindow(path)
         editor.show()
@@ -169,6 +156,7 @@ class Gallery:
         path = self.files[i]
         return cv2.imread(path, cv2.IMREAD_COLOR)
 
+    # render current image into correct size
     def _render_current(self) -> np.ndarray:
         path = self.files[self.idx]
         img = self._load(self.idx)
@@ -183,6 +171,8 @@ class Gallery:
 
         proc = apply_zoom(img, self.zoom)
         proc = apply_contrast_brightness(proc, self.alpha, self.beta)
+
+        # 🔥 NEW: dynamic, non-stretched fit — matches interface scaling
         disp = fit_in_window(proc, 1280, 720)
 
         hud = (
@@ -205,33 +195,30 @@ class Gallery:
             print("No images.")
             return
 
-        cv2.namedWindow(self.win, cv2.WINDOW_AUTOSIZE)
+        # 🔥 CRITICAL FIX — prevents stretching
+        cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.win, 1280, 720)
 
         while True:
             cv2.imshow(self.win, self._render_current())
             k = cv2.waitKeyEx(0) & 0xFFFFFFFF
 
-            # Quit
-            if k in (27, ord('q')):
+            if k in (27, ord('q')):     # Quit
                 cv2.destroyWindow(self.win)
                 break
 
-            # -------------------------------
-            # LEFT ARROW (all possible keycodes)
-            # -------------------------------
+            # LEFT ARROW
             elif k in (81, 2424832, 65361):
                 self.idx = (self.idx - 1) % len(self.files)
 
-            # -------------------------------
-            # RIGHT ARROW (all possible keycodes)
-            # -------------------------------
+            # RIGHT ARROW
             elif k in (83, 2555904, 65363):
                 self.idx = (self.idx + 1) % len(self.files)
 
-            # Optional: Zoom with Up/Down arrows
-            elif k in (82, 65362):   # UP
+            # Zoom UP/DOWN
+            elif k in (82, 65362):   # UP arrow
                 self.adjust_zoom(+0.1)
-            elif k in (84, 65364):   # DOWN
+            elif k in (84, 65364):   # DOWN arrow
                 self.adjust_zoom(-0.1)
 
             # Edit (E key)
