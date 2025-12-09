@@ -18,7 +18,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QStatusBar, QMessageBox
+    QStatusBar, QMessageBox, QGridLayout,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
@@ -28,6 +28,8 @@ from xavier.gallery import Gallery, ImageEditorWindow
 from xavier.relay import hv_on, hv_off
 from xavier.leds import LedPanel
 from xavier.adc_reader import read_hv_voltage, hv_status_ok
+from PyQt6.QtCore import QThread, pyqtSignal
+from xavier.adc_reader import _read_adc_voltage, read_hv_voltage
 
 from xavier.stepper_Motor import (
     motor1_forward_until_switch2,
@@ -69,6 +71,20 @@ logging.basicConfig(
 def log_event(message):
     logging.info(message)
 
+
+class ADCWorker(QThread):
+    new_hv = pyqtSignal(float, float)  # V0, HV
+    running = True
+
+    def run(self):
+        while self.running:
+            v0 = _read_adc_voltage()
+            hv = read_hv_voltage()
+            self.new_hv.emit(v0, hv)
+            self.msleep(80)  # ~12 Hz updates
+
+    def stop(self):
+        self.running = False
 
 # =====================================================
 # CAMERA BACKEND (Patched)
@@ -199,34 +215,35 @@ class MainWindow(QMainWindow):
             log_event(f"Startup: could not remove shutdown flag: {e}")
 
         self.setWindowTitle("IC X-ray Viewer")
-        # self.resize(1280,720)
 
         self.leds = LedPanel()
 
         # --------------------------------------------------------
-        # INTERNAL STATES
+        # Core system state variables
         # --------------------------------------------------------
-        self.preview_on     = False
-        self.armed          = False
+        self.last_v0 = 0.0
+        self.last_hv = 0.0
+        self.hv_min = float('inf')
+        self.hv_max = 0.0
+        self.current_angle = 0
+
+        self.preview_on = False
+        self.armed = False
         self.hv_fault_active = False
         self.has_closed_once = False
-        self.has_started     = False
-        self.hv_active       = False
-
-        # PATCH A6 — Track preview state before E-STOP
+        self.has_started = False
+        self.hv_active = False
         self.preview_was_running_before_estop = False
 
-        # PATCH A4 — banner spam limiter
         self._last_banner_time = 0
         self._force_banner = False
 
         # --------------------------------------------------------
-        # SW2/SW1 input
+        # Hardware inputs
         # --------------------------------------------------------
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         GPIO.setup(17, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        
 
         # --------------------------------------------------------
         # Camera backend
@@ -234,17 +251,42 @@ class MainWindow(QMainWindow):
         self.backend = PiCamBackend()
         self.backend.start()
 
+        
         # --------------------------------------------------------
-        # UI Setup
+        # UI SETUP
         # --------------------------------------------------------
-        self.alarm = QLabel("System Ready", alignment=Qt.AlignmentFlag.AlignCenter)
-        self.alarm.setStyleSheet(
-            "font-size:26px;font-weight:bold;padding:8px;"
-        )
 
+        # --- Banner label ---
+        self.alarm = QLabel("System Ready", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.alarm.setStyleSheet("font-size:26px;font-weight:bold;padding:8px;")
+
+        # --- Camera preview label ---
         self.view = QLabel("Camera", alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # CONTROL BUTTONS
+        # --- STATUS LABELS (HV + ANGLE) ---
+        self.lbl_adc = QLabel("HV: -- kV", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.lbl_adc.setStyleSheet("font-size:14px; font-weight:bold; color:#3A7;")
+        
+        self.lbl_hv_left = QLabel("HV", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.lbl_hv_left.setStyleSheet("font-size:14px; font-weight:bold; color:#3A7;")
+
+        self.lbl_angle_right = QLabel("", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.lbl_angle_right.setStyleSheet("font-size:14px; font-weight:bold; color:#37A;")
+
+        self.lbl_hv_max = QLabel("", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.lbl_hv_max.setStyleSheet("font-size:14px; font-weight:bold; color:#3A7;")
+        
+        self.lbl_adc = QLabel("HV: -- kV", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.lbl_adc.setStyleSheet("font-size:14px; font-weight:bold; color:#3A7;")
+
+        self.lbl_hv_min = QLabel("", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.lbl_hv_min.setStyleSheet("font-size:14px; font-weight:bold; color:#3A7;")
+
+        self.lbl_hv_max.setText("Max: -- kV")
+        self.lbl_hv_min.setText("Min: -- kV")
+        self.lbl_angle_right.setText("Angle: 0°")
+
+        # --- Control Buttons ---
         self.btn_open   = QPushButton("OPEN")
         self.btn_close  = QPushButton("CLOSE")
         self.btn_rotate = QPushButton("Rotate 45°")
@@ -260,11 +302,15 @@ class MainWindow(QMainWindow):
             "background-color: #D32F2F; color: white; font-weight: bold; font-size: 18px; padding: 10px;"
         )
 
-
+        # --------------------------------------------------------
+        # LAYOUTS
+        # --------------------------------------------------------
         central = QWidget()
         root = QHBoxLayout(central)
         left = QVBoxLayout()
+        center = QVBoxLayout()
 
+        # ---- Left side buttons ----
         for b in (
             self.btn_preview, self.btn_stop,
             self.btn_xray,
@@ -275,19 +321,54 @@ class MainWindow(QMainWindow):
         ):
             left.addWidget(b)
 
+        hv_grid = QGridLayout()
+
+        hv_grid.setVerticalSpacing(0)
+        hv_grid.setHorizontalSpacing(20)
+        hv_grid.setContentsMargins(0, 0, 0, 0)
+
+
+        # Row 0 — Max centered
+        hv_grid.addWidget(self.lbl_hv_max, 0, 1)
+
+        # Row 1 — HV left & Angle right
+        hv_grid.addWidget(self.lbl_hv_left, 1, 0)
+        hv_grid.addWidget(self.lbl_angle_right, 1, 2)
+
+        # Row 2 — Min centered
+        hv_grid.addWidget(self.lbl_hv_min, 2, 1)
+
+        # Column stretch so everything is centered
+        hv_grid.setColumnStretch(0, 1)
+        hv_grid.setColumnStretch(1, 1)
+        hv_grid.setColumnStretch(2, 1)
+
+        left.addLayout(hv_grid)
+
+
         left.addStretch()
 
-        center = QVBoxLayout()
+
+        # ---- Center panel (banner + camera + status labels) ----
         center.addWidget(self.alarm)
         center.addWidget(self.view, 1)
 
+        # ---- Combine layouts ----
         root.addLayout(left)
         root.addLayout(center, 1)
         self.setCentralWidget(central)
-
+        # --------------------------------------------------------
+        # ADC Thread
+        # --------------------------------------------------------
+        self.adc_thread = ADCWorker()
+        self.adc_thread.new_hv.connect(self.update_adc_display)
+        self.adc_thread.start()
+        self.hv_samples = []
+        # --------------------------------------------------------
+        # Status bar and window settings
+        # --------------------------------------------------------
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-
         self.resize(1280,720)
         QTimer.singleShot(300, self.showFullScreen)
 
@@ -360,6 +441,11 @@ class MainWindow(QMainWindow):
         self.heartbeat_timer.setInterval(200)
         self.heartbeat_timer.timeout.connect(self.send_heartbeat)
         self.heartbeat_timer.start()
+
+        self.display_timer = QTimer(self)
+        self.display_timer.setInterval(200)
+        self.display_timer.timeout.connect(self.update_display_panels)
+        self.display_timer.start()
 
         self.all_leds_off()
 
@@ -638,6 +724,7 @@ class MainWindow(QMainWindow):
     def on_rotate45(self):
         log_event("Rotate 45° requested")
 
+        
         # PATCH B4 — Block rotation unless tray is fully closed
         if not self.has_closed_once or not self.armed:
             QMessageBox.warning(
@@ -657,6 +744,8 @@ class MainWindow(QMainWindow):
             log_event("PATCH B4 — Rotation blocked (HV fault)")
             return
 
+        self.current_angle = (self.current_angle + 45) % 360
+
         # SAFE rotation
         log_event("PATCH B4 — Rotation allowed, rotating 45°")
         motor3_rotate_45()
@@ -669,6 +758,7 @@ class MainWindow(QMainWindow):
     # ============================================================
     def on_home3(self):
         log_event("Motor 3 going HOME")
+        self.current_angle = 0
 
         if not self.hv_fault_active:
             motor3_home()
@@ -721,6 +811,12 @@ class MainWindow(QMainWindow):
         if not self.armed:
             QMessageBox.warning(self, "Not Aligned", "Tray must be fully closed.")
             return
+        
+        # --- Start sampling ---
+        self.hv_samples = []
+        self.hv_active = True
+        self.hv_min = None
+        self.hv_max = None
 
         # UI & LED
         self.all_leds_off()
@@ -728,20 +824,13 @@ class MainWindow(QMainWindow):
         self._force_banner = True
         self.banner("HV On — Taking X-Ray Picture", color="blue")
         self._force_banner = False
-        self.alarm.repaint()
         QApplication.processEvents()
-        time.sleep(0.2)
 
-        # XRAY SEQUENCE
         try:
-            self.hv_active = True
             hv_on()
             time.sleep(0.4)
 
-            # PATCH A5 — Ensure backend is running
             self.backend.ensure_running()
-
-            # PATCH A5 — Safe capture with guaranteed camera state
             img = self.backend.capture_xray_fixed()
 
         except Exception as e:
@@ -754,8 +843,9 @@ class MainWindow(QMainWindow):
         finally:
             hv_off()
             log_event("HV OFF — XRAY sequence completed")
-            self.hv_active = False
 
+
+            
         # UI Reset
         self.all_leds_off()
         self.leds.write(self.leds.green, True)
@@ -781,7 +871,12 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
+        QTimer.singleShot(120, self.compute_hv_minmax)
 
+        log_event(f"HV RANGE DURING SHOT kV")
+        print(f"HV RANGE DURING SHOT kV")
+
+        
 
     # ============================================================
     # SHOW LAST CAPTURE
@@ -963,6 +1058,56 @@ class MainWindow(QMainWindow):
         )
         self.view.setPixmap(px)
 
+    def update_adc_display(self, v0, hv):
+
+        if not hasattr(self, "lbl_adc"):
+            return  # UI not finished
+
+        self.last_v0 = v0
+        self.last_hv = hv
+
+        # Noise suppression for live label
+        if hv < 5000:
+            hv = 0.0
+        if hv > 70000:
+            hv = 0.0
+
+        self.lbl_adc.setText(f"HV: {hv/1000:.2f} kV")
+
+        # === HV sampling (only when X-ray is active) ===
+        if self.hv_active:
+            # ignore OFF/noise values (ex: 9.5 kV baseline)
+            if hv > 20000:  
+                self.hv_samples.append(hv)
+
+        print(f"[GUI ADC] V0={v0:.6f} V | HV={hv:.2f} V")
+
+    def update_display_panels(self):
+
+        # --- ANGLE LABEL ---
+        try:
+            self.lbl_angle_right.setText(f"Angle: {self.current_angle}°")
+        except Exception as e:
+            log_event(f"Angle label update failed: {e}")
+
+    def compute_hv_minmax(self):
+        # stop collecting samples
+        self.hv_active = False
+
+        if self.hv_samples:
+            self.hv_max = max(self.hv_samples)
+            self.hv_min = min(self.hv_samples)
+        else:
+            self.hv_max = 0
+            self.hv_min = 0
+
+        # update UI
+        self.lbl_hv_max.setText(f"Max: {self.hv_max/1000:.2f} kV")
+        self.lbl_hv_min.setText(f"Min: {self.hv_min/1000:.2f} kV")
+
+        # debug
+        print(f"[HV MIN/MAX FINAL] min={self.hv_min}  max={self.hv_max}")
+        log_event(f"HV MIN/MAX FINAL: min={self.hv_min}  max={self.hv_max}")
 
 
     # ============================================================
