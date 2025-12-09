@@ -128,5 +128,7 @@ try:
         print(f"V0={V0:.4f} V   |   HV_out={HV:.2f} V")
         time.sleep(0.1)
 
-except KeyboardInterrupt:
-    print(
+finally:
+    print("\n⚡ Turning RELAY OFF and exiting...")
+    GPIO.output(RELAY, GPIO.HIGH)   # turn relay OFF
+    GPIO.cleanup()
